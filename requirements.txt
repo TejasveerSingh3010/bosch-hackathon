@@ -10,6 +10,15 @@ pydantic
 locust
 python-dotenv
 
+# --- remediation agent (LLM_API_KEY in .env) ---
+groq
+
+# --- agent graph + tracing (LANGFUSE_* in .env; tracing is off without them) ---
+langgraph
+langchain
+langchain-groq
+langfuse>=4
+
 # --- monitoring (telemetry, dashboard) ---
 streamlit>=1.50
 streamlit-autorefresh>=1.0.1
