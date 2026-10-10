@@ -68,6 +68,7 @@ class FailureAction:
             "restart_count": container.restart_count,
             "started_at": container.started_at,
             "nano_cpus": container.nano_cpus,
+            "mem_limit": container.mem_limit,
         }
         return self._pre
 
@@ -328,6 +329,292 @@ class ThrottleAction(FailureAction):
         )
 
 
+class MemoryLimitAction(FailureAction):
+    """Cap the container's memory in place (`docker update --memory`): memory pressure.
+
+    The process keeps running under a tight cap; if it needs more than the cap the kernel OOM-kills
+    it and the restart policy brings it back, which is itself part of what this measures. Param
+    ``memory_mb`` is the cap to impose and must be below any existing limit. Rollback restores the
+    limit recorded in the pre-state ("unlimited" as the host total, since Docker cannot remove a
+    limit in place), re-inspects, and ensures the container is running after a possible OOM kill.
+    """
+
+    name = "memory_limit"
+    description = "Cap the container's memory in place (memory pressure) (params: memory_mb)"
+
+    def apply(self, container_name: str) -> ActionOutcome:
+        container = self._snapshot(container_name)
+        pre = self._record_pre(container)
+        if not container.running:
+            return ActionOutcome(
+                False, f"{container_name} is not running (status {container.status})", pre_state=pre
+            )
+        try:
+            limit = memory_params(self.params) * MB
+        except ValueError as exc:
+            return ActionOutcome(False, str(exc), pre_state=pre)
+        host = self.docker.host_memory()
+        if not _mem_unlimited(container.mem_limit, host) and limit >= container.mem_limit:
+            return ActionOutcome(
+                False,
+                f"{container_name} already has a memory limit of {_mem_label(container.mem_limit, host)}; "
+                f"a memory_limit must go below that",
+                pre_state=pre,
+            )
+        self.docker.update_memory(container_name, limit)
+        return ActionOutcome(
+            True,
+            f"capped {container_name} at {limit // MB} MiB (was {_mem_label(container.mem_limit, host)})",
+            pre_state=pre,
+        )
+
+    def rollback(self, container_name: str) -> ActionOutcome:
+        if not self._pre or "mem_limit" not in self._pre:
+            raise DockerError(
+                f"the memory limit {container_name} had before the experiment was not recorded; "
+                f"recreate it from Compose (`docker compose up -d --no-deps <service>`) to restore it"
+            )
+        original, host = int(self._pre["mem_limit"]), self.docker.host_memory()
+
+        def restored() -> bool:
+            current = self._snapshot(container_name).mem_limit
+            return current == original or (_mem_unlimited(original, host) and _mem_unlimited(current, host))
+
+        detail = f"{container_name} already has its original memory limit"
+        if not restored():
+            self.docker.update_memory(container_name, host if _mem_unlimited(original, host) else original)
+            if not restored():  # do not report a restore Docker did not make
+                raise DockerError(
+                    f"{container_name} still has a memory limit of "
+                    f"{_mem_label(self._snapshot(container_name).mem_limit, host)} after rollback"
+                )
+            detail = f"restored the memory limit of {container_name} to {_mem_label(original, host)}"
+        return ActionOutcome(True, f"{detail}; {self._ensure_running(container_name)}")
+
+
+class NetworkPartitionAction(FailureAction):
+    """Disconnect the container from its Compose network: up, but reachable by no one.
+
+    The process keeps running and Docker still reports it running, but every caller gets a name
+    resolution or connection failure - the "up but isolated" split that a clean crash never
+    reproduces. Rollback reconnects it with the aliases recorded in the pre-state (so the service
+    name resolves again) and re-inspects that it is back on the network.
+    """
+
+    name = "network_partition"
+    description = "Disconnect the container from its Compose network (up but unreachable)"
+
+    def _network(self) -> str:
+        return str(self.params.get("network") or (f"{self.project}_default" if self.project else "default"))
+
+    def apply(self, container_name: str) -> ActionOutcome:
+        container = self._snapshot(container_name)
+        pre = self._record_pre(container)
+        if not container.running:
+            return ActionOutcome(
+                False, f"{container_name} is not running (status {container.status})", pre_state=pre
+            )
+        network = self._network()
+        conn = container.network(network)
+        if conn is None:
+            on = ", ".join(c.name for c in container.networks) or "none"
+            return ActionOutcome(
+                False, f"{container_name} is not on network {network!r} (on: {on})", pre_state=pre
+            )
+        pre["network"] = network
+        pre["aliases"] = list(conn.aliases)
+        self.docker.network_disconnect(network, container_name)
+        return ActionOutcome(True, f"disconnected {container_name} from {network}", pre_state=pre)
+
+    def rollback(self, container_name: str) -> ActionOutcome:
+        network = str((self._pre or {}).get("network") or self._network())
+        aliases = tuple((self._pre or {}).get("aliases") or ())
+        if self._snapshot(container_name).network(network) is not None:
+            return ActionOutcome(True, f"{container_name} is already on {network}; nothing to undo")
+        self.docker.network_connect(network, container_name, aliases)
+        if self._snapshot(container_name).network(network) is None:
+            raise DockerError(f"{container_name} is still off {network} after rollback")
+        return ActionOutcome(True, f"reconnected {container_name} to {network} (aliases {list(aliases)})")
+
+
+class NetworkDelayAction(FailureAction):
+    """Add latency and packet loss on the container's interface with `tc netem`: a slow, lossy link.
+
+    A throwaway sidecar sharing the target's network namespace installs the qdisc, which then lives
+    on the target's interface after the sidecar exits. This is the "slow network" failure, distinct
+    from pause (which freezes the process). Params ``delay_ms`` (NETEM_MAX_DELAY_MS) and ``loss_pct``
+    (0-NETEM_MAX_LOSS_PCT). Rollback deletes the qdisc; deleting one already gone is still success.
+    """
+
+    name = "network_delay"
+    description = "Add latency/packet loss on the container's interface (params: delay_ms, loss_pct)"
+
+    def _iface(self) -> str:
+        return str(self.params.get("iface") or "eth0")
+
+    def apply(self, container_name: str) -> ActionOutcome:
+        container = self._snapshot(container_name)
+        pre = self._record_pre(container)
+        if not container.running:
+            return ActionOutcome(
+                False, f"{container_name} is not running (status {container.status})", pre_state=pre
+            )
+        try:
+            delay_ms, loss_pct = netem_params(self.params)
+        except ValueError as exc:
+            return ActionOutcome(False, str(exc), pre_state=pre)
+        iface = self._iface()
+        netem = ["delay", f"{delay_ms}ms"]
+        if loss_pct > 0:
+            netem += ["loss", f"{loss_pct:g}%"]
+        self.docker.tc(container_name, ("qdisc", "add", "dev", iface, "root", "netem", *netem))
+        pre["iface"] = iface
+        detail = f"netem on {container_name} {iface}: delay {delay_ms}ms" + (
+            f", loss {loss_pct:g}%" if loss_pct > 0 else "")
+        return ActionOutcome(True, detail, pre_state=pre)
+
+    def rollback(self, container_name: str) -> ActionOutcome:
+        iface = str((self._pre or {}).get("iface") or self._iface())
+        try:
+            self.docker.tc(container_name, ("qdisc", "del", "dev", iface, "root"))
+        except DockerError as exc:
+            # Deleting a qdisc that is already gone is success, not failure (idempotent rollback).
+            return ActionOutcome(True, f"netem on {container_name} already cleared ({exc})")
+        return ActionOutcome(True, f"removed the netem qdisc on {container_name} {iface}")
+
+
+class FlappingAction(FailureAction):
+    """Take the container down and back up repeatedly on a timer: intermittent flapping.
+
+    This is the failure that defeats naive health checks and retries - up, then down, then up again
+    every few seconds - rather than one clean outage. Params: ``down_s`` (each outage, default 2),
+    ``up_s`` (gap between them, default 3), ``cycles`` (how many, default runs until rollback). It
+    pauses/unpauses on a background thread; rollback stops the loop and ensures the container is up.
+    """
+
+    name = "flapping"
+    description = "Pause and unpause the container repeatedly on a timer (params: down_s, up_s, cycles)"
+
+    def __init__(self, docker: Docker, project: str | None = None, **params: Any) -> None:
+        super().__init__(docker, project, **params)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def apply(self, container_name: str) -> ActionOutcome:
+        container = self._snapshot(container_name)
+        pre = self._record_pre(container)
+        if not container.running:
+            return ActionOutcome(
+                False, f"{container_name} is not running (status {container.status})", pre_state=pre
+            )
+        if self._thread is not None:
+            return ActionOutcome(False, "flapping is already running", pre_state=pre)
+        try:
+            down_s, up_s, cycles = flapping_params(self.params)
+        except ValueError as exc:
+            return ActionOutcome(False, str(exc), pre_state=pre)
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._flap, args=(container_name, down_s, up_s, cycles),
+            name=f"flap-{container_name}", daemon=True,
+        )
+        self._thread.start()
+        count = "until rollback" if cycles == 0 else f"{cycles} cycle(s)"
+        return ActionOutcome(
+            True, f"flapping {container_name} ({down_s:g}s down / {up_s:g}s up, {count})", pre_state=pre
+        )
+
+    def rollback(self, container_name: str) -> ActionOutcome:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=15)
+            self._thread = None
+        return ActionOutcome(
+            True, f"stopped flapping {container_name}; {self._ensure_running(container_name)}"
+        )
+
+    def _flap(self, container_name: str, down_s: float, up_s: float, cycles: int) -> None:
+        done = 0
+        while not self._stop.is_set() and (cycles == 0 or done < cycles):
+            try:
+                if not self._snapshot(container_name).paused:
+                    self.docker.pause(container_name)
+                if self._stop.wait(down_s):
+                    break
+                if self._snapshot(container_name).paused:
+                    self.docker.unpause(container_name)
+            except DockerError:
+                pass  # a transient docker error must not kill the loop; rollback still cleans up
+            done += 1
+            if self._stop.wait(up_s):
+                break
+
+
+MB = 1024 * 1024
+#: Bounds for memory_limit, in MiB. The floor keeps a cap from OOM-killing the process the instant
+#: it is set; the ceiling keeps a "limit" from being so high it constrains nothing.
+MEMORY_MIN_MB, MEMORY_MAX_MB = 16, 4096
+#: Bounds for network_delay.
+NETEM_MAX_DELAY_MS = 10000
+NETEM_MAX_LOSS_PCT = 100.0
+#: Bounds for flapping, in seconds, and the maximum number of cycles.
+FLAP_MIN_S, FLAP_MAX_S = 0.5, 60.0
+FLAP_MAX_CYCLES = 100
+
+
+def _mem_unlimited(mem_limit: int, host_memory: int) -> bool:
+    return mem_limit == 0 or mem_limit >= host_memory
+
+
+def _mem_label(mem_limit: int, host_memory: int) -> str:
+    return "unlimited" if _mem_unlimited(mem_limit, host_memory) else f"{mem_limit // MB} MiB"
+
+
+def memory_params(params: dict[str, Any]) -> int:
+    """Return the memory cap in MiB, or raise ValueError."""
+    if "memory_mb" not in params:
+        raise ValueError("memory_limit requires params.memory_mb (the cap in MiB, e.g. 128)")
+    try:
+        memory_mb = int(params["memory_mb"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("memory_limit params.memory_mb must be a whole number of MiB") from exc
+    if not MEMORY_MIN_MB <= memory_mb <= MEMORY_MAX_MB:
+        raise ValueError(f"memory_limit memory_mb must be from {MEMORY_MIN_MB} to {MEMORY_MAX_MB}")
+    return memory_mb
+
+
+def netem_params(params: dict[str, Any]) -> tuple[int, float]:
+    """Return (delay_ms, loss_pct), or raise ValueError. At least one must be non-zero."""
+    try:
+        delay_ms = int(params.get("delay_ms", 0))
+        loss_pct = float(params.get("loss_pct", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("network_delay params delay_ms and loss_pct must be numbers") from exc
+    if not 0 <= delay_ms <= NETEM_MAX_DELAY_MS:
+        raise ValueError(f"network_delay delay_ms must be from 0 to {NETEM_MAX_DELAY_MS}")
+    if not 0 <= loss_pct <= NETEM_MAX_LOSS_PCT:
+        raise ValueError(f"network_delay loss_pct must be from 0 to {NETEM_MAX_LOSS_PCT:g}")
+    if delay_ms == 0 and loss_pct == 0:
+        raise ValueError("network_delay needs a non-zero delay_ms or loss_pct")
+    return delay_ms, loss_pct
+
+
+def flapping_params(params: dict[str, Any]) -> tuple[float, float, int]:
+    """Return (down_s, up_s, cycles); cycles 0 means run until rollback. Raises ValueError."""
+    try:
+        down_s = float(params.get("down_s", 2))
+        up_s = float(params.get("up_s", 3))
+        cycles = int(params.get("cycles", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("flapping params down_s, up_s and cycles must be numbers") from exc
+    for label, value in (("down_s", down_s), ("up_s", up_s)):
+        if not FLAP_MIN_S <= value <= FLAP_MAX_S:
+            raise ValueError(f"flapping {label} must be from {FLAP_MIN_S:g} to {FLAP_MAX_S:g} seconds")
+    if not 0 <= cycles <= FLAP_MAX_CYCLES:
+        raise ValueError(f"flapping cycles must be from 0 (until rollback) to {FLAP_MAX_CYCLES}")
+    return down_s, up_s, cycles
+
+
 def _unlimited(nano_cpus: int, host_cpus: int) -> bool:
     return nano_cpus == 0 or nano_cpus >= host_cpus * 1_000_000_000
 
@@ -368,7 +655,11 @@ def spike_params(params: dict[str, Any]) -> tuple[int, int, int]:
 
 
 ACTIONS: dict[str, type[FailureAction]] = {
-    action.name: action for action in (KillAction, StopAction, PauseAction, SpikeAction, ThrottleAction)
+    action.name: action
+    for action in (
+        KillAction, StopAction, PauseAction, SpikeAction, ThrottleAction,
+        MemoryLimitAction, NetworkPartitionAction, NetworkDelayAction, FlappingAction,
+    )
 }
 
 

@@ -10,16 +10,31 @@ the same methods, so the injector and runner can be tested without Docker.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
+#: Image for the `tc` sidecar of network_delay; it must carry iproute2. Override with CHAOS_NETEM_IMAGE.
+NETEM_IMAGE = os.getenv("CHAOS_NETEM_IMAGE", "nicolaka/netshoot")
 
 
 class DockerError(RuntimeError):
     """A docker command failed, or the docker CLI/daemon is unreachable."""
+
+
+@dataclass(frozen=True)
+class NetworkConn:
+    """One network a container is on, with the aliases other services resolve it by.
+
+    `docker network disconnect` drops the aliases, so a partition records them and passes them back
+    to `network connect --alias`; otherwise the service name would no longer resolve after rollback.
+    """
+
+    name: str
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,6 +53,12 @@ class Container:
     restart_policy: str  # no | always | unless-stopped | on-failure
     started_at: str | None
     nano_cpus: int = 0  # CPU limit in billionths of a CPU; 0 = no limit
+    mem_limit: int = 0  # memory limit in bytes; 0 = no limit
+    networks: tuple[NetworkConn, ...] = ()
+
+    def network(self, name: str) -> NetworkConn | None:
+        """The connection to network `name`, or None when the container is not on it."""
+        return next((conn for conn in self.networks if conn.name == name), None)
 
     @property
     def cpus(self) -> float:
@@ -57,6 +78,7 @@ class Container:
         host_config = payload.get("HostConfig") or {}
         policy = (host_config.get("RestartPolicy") or {}).get("Name") or "no"
         status = state.get("Status", "unknown")
+        nets = (payload.get("NetworkSettings") or {}).get("Networks") or {}
         return cls(
             name=(payload.get("Name") or "").lstrip("/"),
             service=labels.get(COMPOSE_SERVICE_LABEL),
@@ -70,6 +92,11 @@ class Container:
             restart_policy=policy,
             started_at=state.get("StartedAt"),
             nano_cpus=int(host_config.get("NanoCpus") or 0),
+            mem_limit=int(host_config.get("Memory") or 0),
+            networks=tuple(
+                NetworkConn(name=net, aliases=tuple((data or {}).get("Aliases") or ()))
+                for net, data in sorted(nets.items())
+            ),
         )
 
 
@@ -89,6 +116,11 @@ class Docker(Protocol):
     def unpause(self, name: str) -> None: ...
     def update_cpus(self, name: str, cpus: float) -> None: ...
     def host_cpus(self) -> int: ...
+    def update_memory(self, name: str, limit_bytes: int) -> None: ...
+    def host_memory(self) -> int: ...
+    def network_disconnect(self, network: str, name: str) -> None: ...
+    def network_connect(self, network: str, name: str, aliases: tuple[str, ...] = ...) -> None: ...
+    def tc(self, target: str, args: tuple[str, ...]) -> str: ...
 
 
 class DockerCli:
@@ -162,3 +194,36 @@ class DockerCli:
 
     def host_cpus(self) -> int:
         return int(self._run(["info", "--format", "{{.NCPU}}"]).strip())
+
+    def update_memory(self, name: str, limit_bytes: int) -> None:
+        """Change the memory limit of a live container in place, swap included (a true RAM cap).
+
+        Like `--cpus`, `--memory 0` leaves the limit unchanged, so "no limit" is set as the host's
+        total memory, with unlimited swap as Docker's default.
+        """
+        swap = "-1" if limit_bytes >= self.host_memory() else str(int(limit_bytes))
+        self._run(["update", "--memory", str(int(limit_bytes)), "--memory-swap", swap, name])
+
+    def host_memory(self) -> int:
+        return int(self._run(["info", "--format", "{{.MemTotal}}"]).strip())
+
+    def network_disconnect(self, network: str, name: str) -> None:
+        self._run(["network", "disconnect", network, name])
+
+    def network_connect(self, network: str, name: str, aliases: tuple[str, ...] = ()) -> None:
+        args = ["network", "connect"]
+        for alias in aliases:
+            args += ["--alias", alias]
+        self._run([*args, network, name])
+
+    def tc(self, target: str, args: tuple[str, ...]) -> str:
+        """Run `tc <args>` in a throwaway sidecar sharing the target's network namespace.
+
+        Only `tc` can run (the target images have no shell or iproute2); a qdisc set this way stays
+        on the target's interface after the sidecar exits.
+        """
+        return self._run(
+            ["run", "--rm", "--network", f"container:{target}", "--cap-add", "NET_ADMIN",
+             "--entrypoint", "tc", NETEM_IMAGE, *args],
+            timeout=max(self.timeout, 90),  # the first run pulls the image
+        )

@@ -12,9 +12,9 @@ actually matters for correctness:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from injector.docker_cli import Container, DockerError
+from injector.docker_cli import Container, DockerError, NetworkConn
 
 
 @dataclass
@@ -29,6 +29,15 @@ class FakeContainer:
     exit_code: int | None = None
     started_at: str | None = "2026-10-10T06:00:00.000000000Z"
     nano_cpus: int = 0
+    mem_limit: int = 0
+    #: network name -> aliases the container resolves by on it. Starts on its project default network.
+    networks: dict[str, tuple[str, ...]] | None = None
+    #: tc netem qdiscs installed per interface (set by the tc sidecar), for network_delay tests.
+    qdiscs: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        if self.networks is None:
+            self.networks = {f"{self.project}_default": (self.service,)}
 
     @property
     def running(self) -> bool:
@@ -48,6 +57,11 @@ class FakeContainer:
             restart_policy=self.restart_policy,
             started_at=self.started_at if self.running else None,
             nano_cpus=self.nano_cpus,
+            mem_limit=self.mem_limit,
+            networks=tuple(
+                NetworkConn(name=net, aliases=tuple(aliases))
+                for net, aliases in sorted((self.networks or {}).items())
+            ),
         )
 
 
@@ -55,11 +69,12 @@ class FakeDocker:
     """Drop-in replacement for DockerCli in tests."""
 
     def __init__(self, containers: list[FakeContainer] | None = None,
-                 self_heal_on_kill: bool = True, ncpu: int = 8) -> None:
+                 self_heal_on_kill: bool = True, ncpu: int = 8, mem_total: int = 8 * 1024**3) -> None:
         self.containers: dict[str, FakeContainer] = {c.name: c for c in (containers or default_stack())}
         self.calls: list[tuple[str, str]] = []
         self.self_heal_on_kill = self_heal_on_kill
         self.ncpu = ncpu
+        self.mem_total = mem_total
         #: Set method names here to make them raise, e.g. docker.fail_on = {"start"}.
         self.fail_on: set[str] = set()
 
@@ -135,6 +150,37 @@ class FakeDocker:
 
     def host_cpus(self) -> int:
         return self.ncpu
+
+    def update_memory(self, name: str, limit_bytes: int) -> None:
+        self._record("update_memory", name)
+        if limit_bytes:  # like --cpus, docker treats --memory 0 as "leave unchanged"
+            self._get(name).mem_limit = int(limit_bytes)
+
+    def host_memory(self) -> int:
+        return self.mem_total
+
+    def network_disconnect(self, network: str, name: str) -> None:
+        self._record("network_disconnect", name)
+        container = self._get(name)
+        if network not in (container.networks or {}):
+            raise DockerError(f"container {name!r} is not connected to network {network!r}")
+        del container.networks[network]
+
+    def network_connect(self, network: str, name: str, aliases: tuple[str, ...] = ()) -> None:
+        self._record("network_connect", name)
+        (self._get(name).networks or {})[network] = tuple(aliases)
+
+    def tc(self, target: str, args: tuple[str, ...]) -> str:
+        self._record("tc", target)
+        container = self._get(target)
+        verb, iface = args[0], (args[args.index("dev") + 1] if "dev" in args else "eth0")
+        if verb == "add":
+            container.qdiscs.add(iface)
+        elif verb == "del":
+            if iface not in container.qdiscs:
+                raise DockerError(f"RTNETLINK answers: No such file or directory (no qdisc on {iface})")
+            container.qdiscs.discard(iface)
+        return ""
 
 
 def default_stack(project: str = "online-boutique") -> list[FakeContainer]:

@@ -13,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from injector.actions import ACTIONS, spike_params, throttle_params
 
-ActionName = Literal["kill", "stop", "pause", "spike", "throttle"]
+ActionName = Literal[
+    "kill", "stop", "pause", "spike", "throttle",
+    "memory_limit", "network_partition", "network_delay", "flapping",
+]
 Verdict = Literal["completed", "aborted", "stopped", "failed", "dry_run"]
 
 
