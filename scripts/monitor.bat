@@ -13,10 +13,13 @@ taskkill /FI "WINDOWTITLE eq Boutique*" /T /F >nul 2>&1
 set "BOUTIQUE_URL=http://localhost:8080"
 start "Boutique monitor" cmd /k ""%PY%" monitor\headless_monitor.py"
 
+rem Agent 2: watches telemetry and writes a failure report the moment something breaks.
+start "Boutique reporter" cmd /k ""%PY%" -m reporter watch"
+
 set "BOUTIQUE_DASHBOARD_WRITES=0"
 start "Boutique dashboard" cmd /k ""%PY%" -m streamlit run monitor\dashboard.py"
 
 echo.
-echo Monitor and dashboard starting in their own windows.
+echo Monitor, reporter (Agent 2) and dashboard starting in their own windows.
 echo Dashboard: http://localhost:8501
 echo Leave both running, then: scripts\baseline.bat (after ~5 minutes)

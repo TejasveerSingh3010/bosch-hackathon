@@ -6,6 +6,7 @@
     python -m orchestrator run --target frontend --action spike --rps 20 --users 5 --duration 30
     python -m orchestrator run docs/experiment.example.json
     python -m orchestrator run ... --dry-run               validate and explain, change nothing
+    python -m orchestrator run ... --no-report             skip the automatic Agent 2 failure report
     python -m orchestrator stop                            engage the kill switch (from another window)
     python -m orchestrator recover                          undo what a crashed run left behind
 """
@@ -206,6 +207,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"\nfull record       {config.results_dir / (result.experiment.id + '.json')}")
     print("=" * 68)
 
+    if not args.no_report:
+        # Agent 2 writes the failure report as soon as the experiment is over and rolled back.
+        from reporter.service import report_after_experiment
+
+        report_after_experiment(result, config.results_dir, config.compose_project)
+
     if result.errors:
         return EXIT_ERROR
     return EXIT_ABORTED if result.verdict in ("aborted", "stopped") else EXIT_OK
@@ -233,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--reason", help="why this experiment is worth running")
     run.add_argument("--poll", type=float, default=2.0, help="watchdog poll interval, seconds")
     run.add_argument("--dry-run", action="store_true", help="validate and explain, change nothing")
+    run.add_argument("--no-report", action="store_true", help="skip the automatic Agent 2 failure report")
     run.set_defaults(func=cmd_run)
 
     for name, func, help_text in (

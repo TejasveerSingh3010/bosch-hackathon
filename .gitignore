@@ -224,6 +224,12 @@ results/*.json
 *.tar
 images.txt
 
+# Agent 2 (reporter): per-experiment raw logs, the demo scenario, the audit log and the newest-report copies
+results/*.logs/
+results/demo/
+results/agent_log.jsonl
+reports/latest.*
+
 # monitor runtime output
 results/SLA_BREACH.flag
 results/*.tmp

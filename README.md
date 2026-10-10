@@ -48,6 +48,8 @@ The score is a weighted sum over the graph, not a learned model, so every number
 | `safety/` | Validation, watchdog, kill switch, crash recovery |
 | `orchestrator/` | Runs one experiment end to end |
 | `planner/` | AI experiment planning (day 2; package is a stub today) |
+| `reporter/` | Agent 2: failure reports that pinpoint where each failure started |
+| `agents/` | Shared LLM seam (`agents/llm.py`): a stub client today, the real model later |
 | `results/` | Telemetry, baseline, and per-experiment records |
 
 ## Prerequisites
@@ -205,6 +207,48 @@ Each run prints a summary and writes `results/<id>.json`:
 | `self_healed` | Whether Docker's restart policy recovered the container before rollback |
 | `abort_reason` | Which safety limit stopped the run |
 
+## Agent 2: the Reporter
+
+Agent 2 writes a report for every failure, and says exactly **where** it started and how it spread. It shows up on its own in three places:
+
+| When | How | Where you see it |
+|---|---|---|
+| After every experiment | `python -m orchestrator run ...` calls it as soon as the run is rolled back (`--no-report` skips it) | The terminal, then `reports/<experiment-id>.md` |
+| When a failure happens that nobody triggered | `python -m reporter watch` (started for you by `scripts\monitor.bat`) notices the first failing sample and prints `FAILURE DETECTED`; the report follows when the app recovers | The watcher window, then `reports/incident-<time>.md` |
+| Always | The dashboard reads `reports/latest.*` | **Failure report (Agent 2)** on `http://localhost:8501`, with a pop-up when a new report arrives |
+
+Try it now, with no Docker and no running app:
+
+```powershell
+scripts\report.bat demo           :: a frozen productcatalogservice
+scripts\report.bat demo kill      :: a killed redis-cart that Docker restarts
+```
+
+This writes `reports/demo-*.md` (open it in VS Code's markdown preview) and prints a summary. Everything else:
+
+```powershell
+scripts\report.bat watch          :: watch live telemetry (monitor.bat already starts this)
+scripts\report.bat latest         :: print the newest report
+scripts\report.bat <experiment-id>   :: rebuild the report for a finished experiment
+```
+
+**What it reads.** Code assembles one ordered, id-tagged evidence timeline (`E1`, `E2`, ...) from the experiment record, the telemetry history (page probes, per-service health), Docker events, the target's and its callers' container logs (`docker logs` for the failure window, error lines deduplicated), and the dependency graph. The narrator only sees that pack, and every claim in the report cites ids from it. Citations that do not exist are removed and flagged.
+
+**What it writes** under `reports/`:
+
+| File | Content |
+|---|---|
+| `<id>.md` / `<id>.json` | Where the failure was, failure origin, how it spread (origin, then services, then pages, with seconds after the origin), impact and timings, what worked, anomalies and unknowns, log findings, the evidence timeline. The JSON is what Agent 3 will read |
+| `latest.md` / `latest.json` | The newest report (what the dashboard shows) |
+| `campaign.md` | One table row per report |
+
+**No LLM yet.** The narrator is a deterministic rule set (`reporter/analysis.py`), registered behind `agents/llm.py`. The real prompt is already written in `reporter/prompts.py`; wiring a model in later means implementing `RealClient.complete_json` and returning it from `get_client()` (search the code for `TODO(llm)`). Without a key, or if the model fails, the rules still produce the report. Every narrator call is logged to `results/agent_log.jsonl`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BOUTIQUE_REPORTS_DIR` | `reports/` | Where reports are written and where the dashboard looks |
+| `BOUTIQUE_REPORT_LOGS` | `1` | `0` skips the `docker logs` capture (reports then say logs were not captured) |
+
 ## Safety controls
 
 The brief asks for controlled failures with automatic limits. Nothing reaches Docker without passing all of this, and none of it calls an LLM:
@@ -246,7 +290,7 @@ Walks through monitoring status, the dependency map, a plan the safety layer ref
 scripts\test.bat
 ```
 
-90 tests covering the safety rules, the watchdog's abort conditions, every action's rollback, the runner's abort and recovery paths, and the mapper. They use a fake Docker (`tests/fake_docker.py`) that models restart policies, so **no Docker and no running app are needed**.
+Over 130 tests covering the safety rules, the watchdog's abort conditions, every action's rollback, the runner's abort and recovery paths, and the mapper. They use a fake Docker (`tests/fake_docker.py`) that models restart policies, so **no Docker and no running app are needed**.
 
 ## Tools, AI models and libraries used
 

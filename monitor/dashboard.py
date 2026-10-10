@@ -1,6 +1,8 @@
 import json
 import os
 import time
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -137,6 +139,40 @@ if write_error:
     st.warning(f"Could not write telemetry files: {write_error}")
 
 # ---------------- Service health ----------------
+# ---------------- Agent 2: failure report ----------------
+def _latest_report():
+    """The newest report Agent 2 wrote (reports/latest.json + latest.md), or (None, None)."""
+    reports_dir = Path(os.getenv("BOUTIQUE_REPORTS_DIR") or core.OUT_DIR.parent / "reports")
+    try:
+        data = json.loads((reports_dir / "latest.json").read_text(encoding="utf-8"))
+        text = (reports_dir / "latest.md").read_text(encoding="utf-8")
+        return data, text
+    except (OSError, ValueError):
+        return None, None
+
+
+st.divider()
+st.subheader("🧾 Failure report (Agent 2)")
+_report, _report_md = _latest_report()
+if _report is None:
+    st.caption("No failure report yet. Agent 2 writes one automatically after every experiment, and when it "
+               "sees a failure on its own (scripts\\monitor.bat starts its watcher). Try: python -m reporter demo")
+else:
+    _analysis = _report["analysis"]
+    try:
+        _age = max(0, int(time.time() - datetime.fromisoformat(_report["generated_at"]).timestamp()))
+    except ValueError:
+        _age = 0
+    _previous = st.session_state.get("last_report_id")
+    if _previous is not None and _previous != _report["id"]:
+        st.toast(f"New failure report: {_report['id']}", icon="🧾")
+    st.session_state.last_report_id = _report["id"]
+    _banner = f"**{_report['title']}** · {_age}s ago\n\n{_analysis['headline']}"
+    {"critical": st.error, "major": st.error, "minor": st.warning}.get(_analysis["severity"], st.success)(_banner)
+    st.markdown("**Where it failed:** " + _analysis["failure_point"])
+    with st.expander("Full report", expanded=_age < 300):
+        st.markdown(_report_md)
+
 st.divider()
 st.subheader("Service health")
 st.caption("Every service, including the ones no page probe can see. *Down* = container not ready or "
