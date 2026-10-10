@@ -10,7 +10,7 @@ An AI system that plans, injects and analyzes controlled failures in a cloud-nat
 4. **Stops itself** when an experiment does too much damage: the watchdog aborts and rolls back on error rate, latency, blast radius or lost monitoring, and anyone can force a stop.
 5. **Measures** what happened: time to detect, time to recover, which pages failed, and how error rate and latency moved against the baseline.
 
-Day 2 adds the AI planner (which experiment to run next, and why) and the analyst (ranked findings with recommended fixes). The interfaces they plug into already exist: `schemas.Experiment` in, `schemas.ExperimentResult` out. `planner/` is the empty package those agents will live in.
+Day 2 adds the AI planner (`planner/`, Agent 1: which experiment to run next, and why) and the analyst (ranked findings with recommended fixes). The planner is an LLM on a **constrained tool interface**: it chooses from a fixed catalogue of eight fault types (each usable on any allowed service), can act only through typed tools (never a shell or Docker directly), and every injection is re-validated by the policy check and needs human approval. The interfaces the agents plug into already exist: `schemas.Experiment` in, `schemas.ExperimentResult` out.
 
 ## Architecture
 
@@ -47,9 +47,9 @@ The score is a weighted sum over the graph, not a learned model, so every number
 | `injector/` | Failure actions and rollback |
 | `safety/` | Validation, watchdog, kill switch, crash recovery |
 | `orchestrator/` | Runs one experiment end to end |
-| `planner/` | AI experiment planning (day 2; package is a stub today) |
+| `planner/` | Agent 1: the LLM attack planner on a constrained, policy-gated, human-approved tool interface |
 | `reporter/` | Agent 2: failure reports that pinpoint where each failure started |
-| `agents/` | Shared LLM seam (`agents/llm.py`): a stub client today, the real model later |
+| `agents/` | Shared LLM seam (`agents/llm.py`): Groq `openai/gpt-oss-20b` for the reporter, rule-based stub without a key |
 | `results/` | Telemetry, baseline, and per-experiment records |
 
 ## Prerequisites
@@ -213,6 +213,29 @@ Each run prints a summary and writes `results/<id>.json`:
 | `self_healed` | Whether Docker's restart policy recovered the container before rollback |
 | `abort_reason` | Which safety limit stopped the run |
 
+## Agent 1: the attack planner
+
+Agent 1 chooses which experiments to run. It is an LLM on a **constrained tool interface**: it can only pick from a fixed catalogue of eight fault types, each runnable on any allowed service, and it reaches the system only through typed tools, never a shell or Docker. Every injection it proposes is re-validated by the same safety layer the runner uses, and **asks you y/N before it runs**.
+
+```powershell
+:: the eight attacks and the services they can target, and the current cluster health
+python -m planner list
+python -m planner health
+python -m planner details memory_limit
+
+:: plan and run up to 3 experiments; it asks for approval before each injection
+python -m planner run --goal "find the worst dependency failure" --limit 3
+
+:: non-interactive: pre-approve specific experiment ids, or (isolated test env only) approve all
+python -m planner run --limit 2 --approve pause-cartservice-...
+python -m planner run --limit 2 --auto
+
+:: select and policy-check only, injecting nothing
+python -m planner run --limit 3 --dry-run
+```
+
+The eight fault types: `kill`, `stop`, `pause`, `throttle` (CPU), `memory_limit`, `network_partition`, `network_delay` (latency/loss), and `flapping` (intermittent). Selection uses Groq when `LLM_API_KEY` is set and a deterministic blast-radius ranker (from `docs/services.yaml`) otherwise. Every tool request, policy decision, approval and result is written to an audit trail under `results/plans/<session>/`. The planner has no unrestricted shell or Docker access: the only way it can inject a fault is a catalogue attack that passed the policy check and a human approved.
+
 ## Agent 2: the Reporter
 
 Agent 2 writes a report for every failure, and says exactly **where** it started and how it spread. It shows up on its own in three places:
@@ -248,7 +271,7 @@ scripts\report.bat <experiment-id>   :: rebuild the report for a finished experi
 | `latest.md` / `latest.json` | The newest report (what the dashboard shows) |
 | `campaign.md` | One table row per report |
 
-**No LLM yet.** The narrator is a deterministic rule set (`reporter/analysis.py`), registered behind `agents/llm.py`. The real prompt is already written in `reporter/prompts.py`; wiring a model in later means implementing `RealClient.complete_json` and returning it from `get_client()` (search the code for `TODO(llm)`). Without a key, or if the model fails, the rules still produce the report. Every narrator call is logged to `results/agent_log.jsonl`.
+**The narrator is `openai/gpt-oss-20b` on Groq** (`agents/llm.py` `RealClient`, key `LLM_API_KEY` in `.env`; `LLM_MODEL` overrides the model). It gets the prompt in `reporter/prompts.py` and the evidence pack, answers against a strict JSON schema (one retry if the reply does not validate), and every claim's evidence ids are checked afterwards. Without a key, or if the model fails, the deterministic rules (`reporter/analysis.py`) still produce the report; the report's `narrator` field says which one wrote it. Every narrator call is logged to `results/agent_log.jsonl`.
 
 | Variable | Default | Meaning |
 |---|---|---|
