@@ -37,6 +37,12 @@ class Container:
     restart_count: int
     restart_policy: str  # no | always | unless-stopped | on-failure
     started_at: str | None
+    nano_cpus: int = 0  # CPU limit in billionths of a CPU; 0 = no limit
+
+    @property
+    def cpus(self) -> float:
+        """The CPU limit as `docker update --cpus` takes it; 0.0 means unlimited."""
+        return self.nano_cpus / 1e9
 
     @property
     def self_healing(self) -> bool:
@@ -63,6 +69,7 @@ class Container:
             restart_count=int(payload.get("RestartCount", 0) or 0),
             restart_policy=policy,
             started_at=state.get("StartedAt"),
+            nano_cpus=int(host_config.get("NanoCpus") or 0),
         )
 
 
@@ -80,6 +87,8 @@ class Docker(Protocol):
     def start(self, name: str) -> None: ...
     def pause(self, name: str) -> None: ...
     def unpause(self, name: str) -> None: ...
+    def update_cpus(self, name: str, cpus: float) -> None: ...
+    def host_cpus(self) -> int: ...
 
 
 class DockerCli:
@@ -142,3 +151,14 @@ class DockerCli:
 
     def unpause(self, name: str) -> None:
         self._run(["unpause", name])
+
+    def update_cpus(self, name: str, cpus: float) -> None:
+        """Change the CPU limit of a live container in place.
+
+        Docker treats `--cpus 0` as "leave unchanged", so a limit cannot be removed this way;
+        a limit of `host_cpus()` is the equivalent of none.
+        """
+        self._run(["update", "--cpus", f"{cpus:g}", name])
+
+    def host_cpus(self) -> int:
+        return int(self._run(["info", "--format", "{{.NCPU}}"]).strip())

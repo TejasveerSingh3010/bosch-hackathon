@@ -51,7 +51,7 @@ def test_a_result_round_trips_through_json():
 def test_actions_subcommand_lists_every_failure_mode(capsys):
     assert main(["actions"]) == 0
     out = capsys.readouterr().out
-    assert "kill" in out and "stop" in out and "pause" in out and "spike" in out
+    assert all(name in out for name in ("kill", "stop", "pause", "spike", "throttle"))
 
 
 def test_flags_build_an_experiment_with_a_generated_id():
@@ -83,6 +83,18 @@ def test_spike_flags_become_rps_users_and_time():
 def test_spike_without_a_rate_or_users_is_refused():
     args = build_parser().parse_args(["run", "--target", "frontend", "--action", "spike", "--duration", "20"])
     with pytest.raises(SystemExit, match="--rps"):
+        _experiment_from_args(args)
+
+
+def test_throttle_flag_becomes_the_cpu_limit_and_is_validated():
+    args = build_parser().parse_args(
+        ["run", "--target", "currencyservice", "--action", "throttle", "--cpus", "0.05"]
+    )
+    assert _experiment_from_args(args).params == {"cpus": 0.05}
+    with pytest.raises(ValueError, match="cpus"):
+        Experiment(id="t1", target="currencyservice", action="throttle", duration_s=10)
+    args = build_parser().parse_args(["run", "--target", "adservice", "--action", "kill", "--cpus", "0.1"])
+    with pytest.raises(SystemExit, match="throttle"):
         _experiment_from_args(args)
 
 

@@ -137,6 +137,53 @@ def test_pre_state_is_recorded_so_recovery_knows_what_to_restore(docker):
     assert outcome.pre_state["restart_policy"] == "unless-stopped"
 
 
+def test_throttle_caps_cpu_and_rollback_restores_no_limit(docker):
+    action = action_for("throttle", docker, cpus=0.1)
+    outcome = action.apply(TARGET)
+    assert outcome.ok and "was unlimited" in outcome.detail
+    assert docker.containers[TARGET].nano_cpus == 100_000_000
+    assert action.rollback(TARGET).ok
+    # Docker cannot clear a limit in place: "unlimited" comes back as every host CPU.
+    assert docker.containers[TARGET].nano_cpus == docker.ncpu * 1_000_000_000
+    assert "nothing to undo" in action.rollback(TARGET).detail
+    assert "was unlimited" in action_for("throttle", docker, cpus=0.1).apply(TARGET).detail
+
+
+def test_a_throttle_rollback_docker_ignores_is_an_error_not_a_success(docker):
+    action = action_for("throttle", docker, cpus=0.1)
+    action.apply(TARGET)
+    docker.update_cpus = lambda *_: None  # the command "succeeds" but changes nothing
+    with pytest.raises(DockerError, match="still has a CPU limit of 0.1 CPUs"):
+        action.rollback(TARGET)
+
+
+def test_throttle_restores_an_existing_limit_and_refuses_to_loosen_it(docker):
+    docker.containers[TARGET].nano_cpus = 500_000_000
+    assert not action_for("throttle", docker, cpus=0.5).apply(TARGET).ok
+    action = action_for("throttle", docker, cpus=0.05)
+    assert action.apply(TARGET).ok
+    action.rollback(TARGET)
+    assert docker.containers[TARGET].nano_cpus == 500_000_000
+
+
+def test_throttle_recovery_needs_the_journaled_limit(docker):
+    """`recover` builds a fresh action; without the pre-state it cannot know the old limit."""
+    docker.containers[TARGET].nano_cpus = 50_000_000
+    with pytest.raises(DockerError, match="not recorded"):
+        action_for("throttle", docker, cpus=0.05).rollback(TARGET)
+    action = action_for("throttle", docker, cpus=0.05)
+    action.resume({"nano_cpus": 0})
+    assert action.rollback(TARGET).ok
+    assert docker.containers[TARGET].nano_cpus == docker.ncpu * 1_000_000_000
+
+
+@pytest.mark.parametrize("params", [{}, {"cpus": 0}, {"cpus": 8}, {"cpus": "lots"}])
+def test_throttle_refuses_a_missing_or_out_of_range_limit(docker, params):
+    outcome = action_for("throttle", docker, **params).apply(TARGET)
+    assert not outcome.ok and "cpus" in outcome.detail
+    assert ("update_cpus", TARGET) not in docker.calls
+
+
 def test_spike_sends_until_rollback_stops_it(docker, monkeypatch):
     calls: list[str] = []
 

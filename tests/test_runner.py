@@ -210,6 +210,20 @@ def test_a_leftover_journal_blocks_a_new_run_and_recover_clears_it(docker, confi
     runner.run(experiment())  # the next run is unblocked
 
 
+def test_recover_restores_the_cpu_limit_a_crashed_throttle_replaced(docker, config):
+    from safety.journal import JournalEntry
+
+    runner = ExperimentRunner(docker, config)
+    runner.journal.write(JournalEntry(
+        experiment_id="crashed", action="throttle", container=TARGET, service=TARGET_SERVICE,
+        project=PROJECT, params={"cpus": 0.05}, pre_state={"running": True, "nano_cpus": 200_000_000},
+        injected_at=0.0, pid=1,
+    ))
+    docker.containers[TARGET].nano_cpus = 50_000_000
+    assert "recovered" in runner.recover()
+    assert docker.containers[TARGET].nano_cpus == 200_000_000
+
+
 def test_recover_is_safe_when_there_is_nothing_to_do(docker, config):
     assert "nothing to recover" in ExperimentRunner(docker, config).recover()
 

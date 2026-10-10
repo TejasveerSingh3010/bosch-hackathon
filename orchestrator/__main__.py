@@ -4,6 +4,7 @@
     python -m orchestrator targets                         list containers and whether each is allowed
     python -m orchestrator run --target adservice --action kill --duration 30
     python -m orchestrator run --target frontend --action spike --rps 20 --users 5 --duration 30
+    python -m orchestrator run --target currencyservice --action throttle --cpus 0.05 --duration 30
     python -m orchestrator run docs/experiment.example.json
     python -m orchestrator run ... --dry-run               validate and explain, change nothing
     python -m orchestrator run ... --no-report             skip the automatic Agent 2 failure report
@@ -54,6 +55,7 @@ def _experiment_from_args(args: argparse.Namespace) -> Experiment:
         if args.duration:
             payload["duration_s"] = args.duration
         _merge_spike_flags(payload, args)
+        _merge_throttle_flags(payload, args)
         return Experiment.model_validate(payload)
 
     if not (args.target and args.action):
@@ -68,6 +70,7 @@ def _experiment_from_args(args: argparse.Namespace) -> Experiment:
         "reason": args.reason or "run from the command line",
     }
     _merge_spike_flags(payload, args)
+    _merge_throttle_flags(payload, args)
     return Experiment.model_validate(payload)
 
 
@@ -89,6 +92,15 @@ def _merge_spike_flags(payload: dict, args: argparse.Namespace) -> None:
         raise SystemExit("spike requires --rps, --users and --duration (requests/second, users, seconds)")
     if params and action == "spike":
         payload["params"] = params
+
+
+def _merge_throttle_flags(payload: dict, args: argparse.Namespace) -> None:
+    """Copy --cpus into a throttle plan."""
+    if args.cpus is None:
+        return
+    if payload.get("action") != "throttle":
+        raise SystemExit("--cpus only applies to the throttle action")
+    payload["params"] = {**(payload.get("params") or {}), "cpus": args.cpus}
 
 
 def cmd_actions(_: argparse.Namespace) -> int:
@@ -236,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--duration", type=int, help="seconds to hold the failure (default 30); for spike this is the time")
     run.add_argument("--rps", type=int, help="spike only: requests per second, shared across --users")
     run.add_argument("--users", type=int, help="spike only: number of concurrent clients")
+    run.add_argument("--cpus", type=float, help="throttle only: CPU limit to impose, e.g. 0.1")
     run.add_argument("--id", help="experiment id, used for the result filename")
     run.add_argument("--reason", help="why this experiment is worth running")
     run.add_argument("--poll", type=float, default=2.0, help="watchdog poll interval, seconds")

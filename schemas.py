@@ -11,9 +11,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from injector.actions import ACTIONS, spike_params
+from injector.actions import ACTIONS, spike_params, throttle_params
 
-ActionName = Literal["kill", "stop", "pause", "spike"]
+ActionName = Literal["kill", "stop", "pause", "spike", "throttle"]
 Verdict = Literal["completed", "aborted", "stopped", "failed", "dry_run"]
 
 
@@ -60,6 +60,12 @@ class Experiment(BaseModel):
         if hold > self.duration_s:
             raise ValueError("spike params.time cannot be longer than duration_s")
         self.params = {"rps": rps, "users": users, "time": hold}
+        return self
+
+    @model_validator(mode="after")
+    def _throttle_has_a_cpu_limit(self) -> Experiment:
+        if self.action == "throttle":
+            self.params = {"cpus": throttle_params(self.params)}
         return self
 
 

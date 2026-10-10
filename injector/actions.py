@@ -27,6 +27,8 @@ from .docker_cli import Container, Docker, DockerCli, DockerError
 SPIKE_MAX_RPS = 20000
 SPIKE_MAX_USERS = 50
 SPIKE_PATHS = ("/", "/cart", "/product/0PUK6V6EV0")
+#: Bounds for a CPU throttle, in CPUs. Docker's own minimum is 0.01.
+THROTTLE_MIN_CPUS, THROTTLE_MAX_CPUS = 0.01, 4.0
 
 
 @dataclass
@@ -65,8 +67,13 @@ class FailureAction:
             "restart_policy": container.restart_policy,
             "restart_count": container.restart_count,
             "started_at": container.started_at,
+            "nano_cpus": container.nano_cpus,
         }
         return self._pre
+
+    def resume(self, pre_state: dict[str, Any] | None) -> None:
+        """Hand a fresh action the pre-state a crashed run journaled, so its rollback restores that."""
+        self._pre = pre_state
 
     def _ensure_running(self, container_name: str, attempts: int = 3, wait_s: float = 1.0) -> str:
         """Start the container unless it is already running (possibly restarted by Docker itself)."""
@@ -254,6 +261,94 @@ class SpikeAction(FailureAction):
                 return
 
 
+class ThrottleAction(FailureAction):
+    """Cap the container's CPU in place (`docker update --cpus`): a starved dependency.
+
+    The process keeps running, only slower, so this is the "degraded, not down" failure - the
+    shape of a noisy neighbour or a CPU limit set too tight. Param ``cpus`` is the limit to impose
+    and must be below any existing one (loosening a limit tests nothing). Nothing restarts, so no
+    restart policy is involved; rollback puts back the limit recorded in the pre-state, which the
+    journal keeps so `orchestrator recover` can restore it after a crash. Docker cannot remove a
+    CPU limit in place, so "unlimited" is restored as a limit of every host CPU, which is the same.
+    """
+
+    name = "throttle"
+    description = "Cap the container's CPU in place (starved dependency; slower, not down) (params: cpus)"
+
+    def apply(self, container_name: str) -> ActionOutcome:
+        container = self._snapshot(container_name)
+        pre = self._record_pre(container)
+        if not container.running:
+            return ActionOutcome(
+                False, f"{container_name} is not running (status {container.status})", pre_state=pre
+            )
+        try:
+            cpus = throttle_params(self.params)
+        except ValueError as exc:
+            return ActionOutcome(False, str(exc), pre_state=pre)
+        host = self.docker.host_cpus()
+        if not _unlimited(container.nano_cpus, host) and cpus >= container.cpus:
+            return ActionOutcome(
+                False,
+                f"{container_name} is already limited to {container.cpus:g} CPUs; "
+                f"a throttle must go below that",
+                pre_state=pre,
+            )
+        self.docker.update_cpus(container_name, cpus)
+        return ActionOutcome(
+            True, f"limited {container_name} to {cpus:g} CPUs (was {_cpu_limit(container.nano_cpus, host)})",
+            pre_state=pre,
+        )
+
+    def rollback(self, container_name: str) -> ActionOutcome:
+        if not self._pre or "nano_cpus" not in self._pre:
+            raise DockerError(
+                f"the CPU limit {container_name} had before the throttle was not recorded; recreate it "
+                f"from Compose (`docker compose up -d --no-deps <service>`) to restore the configured limit"
+            )
+        original, host = int(self._pre["nano_cpus"]), self.docker.host_cpus()
+
+        def restored() -> bool:
+            current = self._snapshot(container_name).nano_cpus
+            both_unlimited = _unlimited(original, host) and _unlimited(current, host)
+            return current == original or both_unlimited
+
+        if restored():
+            return ActionOutcome(
+                True, f"{container_name} already has its original CPU limit; nothing to undo"
+            )
+        self.docker.update_cpus(container_name, host if _unlimited(original, host) else original / 1e9)
+        if not restored():  # do not report a restore Docker did not make
+            raise DockerError(
+                f"{container_name} still has a CPU limit of "
+                f"{_cpu_limit(self._snapshot(container_name).nano_cpus, host)} after rollback"
+            )
+        return ActionOutcome(
+            True, f"restored the CPU limit of {container_name} to {_cpu_limit(original, host)}"
+        )
+
+
+def _unlimited(nano_cpus: int, host_cpus: int) -> bool:
+    return nano_cpus == 0 or nano_cpus >= host_cpus * 1_000_000_000
+
+
+def _cpu_limit(nano_cpus: int, host_cpus: int) -> str:
+    return "unlimited" if _unlimited(nano_cpus, host_cpus) else f"{nano_cpus / 1e9:g} CPUs"
+
+
+def throttle_params(params: dict[str, Any]) -> float:
+    """Return the CPU limit to impose or raise ValueError."""
+    if "cpus" not in params:
+        raise ValueError("throttle requires params.cpus (the CPU limit to impose, e.g. 0.1)")
+    try:
+        cpus = float(params["cpus"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("throttle params.cpus must be a number") from exc
+    if not THROTTLE_MIN_CPUS <= cpus <= THROTTLE_MAX_CPUS:
+        raise ValueError(f"throttle cpus must be from {THROTTLE_MIN_CPUS:g} to {THROTTLE_MAX_CPUS:g}")
+    return cpus
+
+
 def spike_params(params: dict[str, Any]) -> tuple[int, int, int]:
     """Return (rps, users, time) or raise ValueError."""
     missing = [key for key in ("rps", "users", "time") if key not in params]
@@ -273,7 +368,7 @@ def spike_params(params: dict[str, Any]) -> tuple[int, int, int]:
 
 
 ACTIONS: dict[str, type[FailureAction]] = {
-    action.name: action for action in (KillAction, StopAction, PauseAction, SpikeAction)
+    action.name: action for action in (KillAction, StopAction, PauseAction, SpikeAction, ThrottleAction)
 }
 
 
@@ -286,7 +381,7 @@ def build_action(action_name: str, docker: Docker, project: str | None = None,
 
 
 def describe_actions() -> str:
-    return "\n".join(f"  {name:<6} {cls.description}" for name, cls in sorted(ACTIONS.items()))
+    return "\n".join(f"  {name:<8} {cls.description}" for name, cls in sorted(ACTIONS.items()))
 
 
 __all__ = ["ACTIONS", "ActionOutcome", "DockerCli", "FailureAction", "build_action", "describe_actions"]

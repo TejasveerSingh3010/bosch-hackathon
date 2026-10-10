@@ -317,6 +317,7 @@ class ExperimentRunner:
             return "nothing to recover: no active experiment journal."
 
         action = build_action(entry.action, self.docker, entry.project, **entry.params)
+        action.resume(entry.pre_state)  # a throttle needs the limit it replaced
         try:
             outcome = action.rollback(entry.container)
         except DockerError as exc:

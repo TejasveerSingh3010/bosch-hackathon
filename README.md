@@ -179,6 +179,9 @@ scripts\experiment.bat adservice kill 20
 :: sustain a traffic spike: 20 requests/second, 5 users, for 30 seconds
 scripts\experiment.bat frontend spike 30 --rps 20 --users 5
 
+:: starve a service of CPU: cap currencyservice at 0.05 CPUs for 30 seconds
+scripts\experiment.bat currencyservice throttle 30 --cpus 0.05
+
 :: or from a plan file (the shape the day-2 planner produces)
 python -m orchestrator run docs\experiment.example.json
 ```
@@ -191,8 +194,11 @@ Failure modes (`python -m orchestrator actions`):
 | `stop` | Stop the container | Behaviour during a lasting dependency outage |
 | `pause` | Freeze every process in it | An unresponsive dependency: callers hang instead of failing fast |
 | `spike` | Hold extra HTTP traffic on the frontend for `--duration` seconds | Behaviour under a sustained load of `--rps` requests/second from `--users` clients |
+| `throttle` | Cap the container's CPU in place (`docker update --cpus`) | A starved dependency: slower, not down, as with a noisy neighbour or a limit set too tight |
 
 `spike` sends GETs to `BOUTIQUE_URL` (default `http://localhost:8080`: the Compose frontend, or `kubectl port-forward svc/frontend 8080:80` on Kubernetes). The rate and the user count are capped at 20000 requests/second and 50 users. Rollback stops the clients. The dashboard **Traffic burst** button is the same kind of load without going through an experiment.
+
+`throttle` takes `--cpus` (0.01 to 4) and must go below any limit the container already has. Rollback restores the limit recorded before injection, which the journal keeps for `recover`. Docker cannot remove a CPU limit in place (`--cpus 0` is ignored), so "no limit" is restored as a limit of every host CPU, which is equivalent.
 
 Each run prints a summary and writes `results/<id>.json`:
 

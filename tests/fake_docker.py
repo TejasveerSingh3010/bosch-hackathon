@@ -6,6 +6,7 @@ actually matters for correctness:
   * `restart: unless-stopped` restarts a container after `kill` (so rollback must cope with a
     container that is already running again) but **not** after `stop`;
   * paused containers are running but frozen;
+  * `docker update --cpus` changes a CPU limit in place, and (as on real Docker) 0 changes nothing;
   * `RestartCount` goes up on a policy restart, which is how the runner detects self-healing;
   * every command can be made to fail, so the error paths are testable too.
 """
@@ -27,6 +28,7 @@ class FakeContainer:
     restart_count: int = 0
     exit_code: int | None = None
     started_at: str | None = "2026-10-10T06:00:00.000000000Z"
+    nano_cpus: int = 0
 
     @property
     def running(self) -> bool:
@@ -45,6 +47,7 @@ class FakeContainer:
             restart_count=self.restart_count,
             restart_policy=self.restart_policy,
             started_at=self.started_at if self.running else None,
+            nano_cpus=self.nano_cpus,
         )
 
 
@@ -52,10 +55,11 @@ class FakeDocker:
     """Drop-in replacement for DockerCli in tests."""
 
     def __init__(self, containers: list[FakeContainer] | None = None,
-                 self_heal_on_kill: bool = True) -> None:
+                 self_heal_on_kill: bool = True, ncpu: int = 8) -> None:
         self.containers: dict[str, FakeContainer] = {c.name: c for c in (containers or default_stack())}
         self.calls: list[tuple[str, str]] = []
         self.self_heal_on_kill = self_heal_on_kill
+        self.ncpu = ncpu
         #: Set method names here to make them raise, e.g. docker.fail_on = {"start"}.
         self.fail_on: set[str] = set()
 
@@ -121,6 +125,16 @@ class FakeDocker:
         if not container.paused:
             raise DockerError(f"cannot unpause {name}: container is not paused")
         container.paused = False
+
+    def update_cpus(self, name: str, cpus: float) -> None:
+        self._record("update_cpus", name)
+        if cpus > self.ncpu:
+            raise DockerError(f"range of CPUs is from 0.01 to {self.ncpu}.00")
+        if cpus:  # real Docker ignores --cpus 0 rather than removing the limit
+            self._get(name).nano_cpus = round(cpus * 1e9)
+
+    def host_cpus(self) -> int:
+        return self.ncpu
 
 
 def default_stack(project: str = "online-boutique") -> list[FakeContainer]:
