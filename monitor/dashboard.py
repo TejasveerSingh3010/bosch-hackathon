@@ -10,6 +10,7 @@ import streamlit as st
 import altair as alt
 
 import boutique_core as core
+import resilience
 import service_graphs as graphs
 
 # ---------------- Page / state ----------------
@@ -137,6 +138,56 @@ if simulate:
     st.warning("Probe-failure simulation is active. Samples are written with `simulated: true`; the application is not modified.")
 if write_error:
     st.warning(f"Could not write telemetry files: {write_error}")
+
+
+# ---------------- Resilience score ----------------
+# Built from the whole telemetry log and every experiment result, so the files are re-read at most
+# every 30 s rather than on each refresh; the live sample only feeds health-check coverage and redundancy.
+@st.cache_data(ttl=30, show_spinner=False)
+def _resilience_inputs(log_path: str, results_dir: str):
+    return resilience.load_history(Path(log_path)), resilience.load_experiments(Path(results_dir))
+
+
+st.divider()
+st.subheader("🧮 Resilience score")
+_history, _experiments = _resilience_inputs(str(core.LOG_PATH), str(core.OUT_DIR))
+_res = resilience.compute(
+    _history, _experiments, sample.get("services") or [], sample.get("workloads") or [],
+    monitored={"frontend", *(core.SERVICE_PROBES if core.SERVICE_PROBES_ON else ())},  # page probes + checks
+    sla_ms=latency_sla, timeout_ms=core.PROBE_TIMEOUT_S * 1000, p95_limit_ms=latency_sla,
+)
+if _res["score"] is None:
+    st.info("No data to score yet: run the monitor for a while and at least one experiment.")
+else:
+    _colour = {"Resilient": "green", "Moderate": "orange"}.get(_res["band"], "red")
+    s1, s2 = st.columns([1, 3])
+    s1.metric("Overall", f"{_res['score']:.0f} / 100")
+    s1.markdown(f"### :{_colour}[{_res['band']}]")
+    s1.caption("R = Σ wᵢ·sᵢ over the factors with data. "
+               + " · ".join(f"{label} {lo}+" for lo, label in resilience.BANDS[:-1]))
+    s2.dataframe(
+        pd.DataFrame([
+            {
+                "Factor": resilience.LABELS[key],
+                "Weight": (f"{f['effective_weight']:.0%}" if f["score"] is not None
+                           else f"{f['weight']:.0%} (no data)"),
+                "Score": f["score"],
+                "Evidence": f["evidence"],
+            }
+            for key, f in _res["factors"].items()
+        ]),
+        column_config={"Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f")},
+        width="stretch",
+        hide_index=True,
+    )
+    s2.caption(
+        "Measured, not declared: the telemetry log plus the newest result per (service, action) in "
+        f"results/ ({len(_res['experiments'])} experiments). Re-run an experiment after a fix and its new "
+        "result replaces the old one. Rules and weights: monitor/resilience.py. There is no universal "
+        "standard for this number."
+        + (f" No data yet for {', '.join(resilience.LABELS[k] for k in _res['missing'])}; "
+           "its weight is shared by the other factors." if _res["missing"] else "")
+    )
 
 # ---------------- Service health ----------------
 # ---------------- Agent 2: failure report ----------------

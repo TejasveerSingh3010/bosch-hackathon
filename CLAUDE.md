@@ -30,7 +30,7 @@ Live runs need the app (`scripts\app-up.bat`), the monitor (`scripts\monitor.bat
 
 The pieces communicate through **files in `results/`**, not imports:
 
-- `monitor/` is a standalone host process (`headless_monitor.py`, plus the Streamlit `dashboard.py`). It writes `telemetry.json` (last 60 samples), `telemetry_log.jsonl` and `SLA_BREACH.flag` every 2 s. Its modules are run as scripts and use flat imports (`import boutique_core as core`), not package imports. Only one process may write telemetry; `monitor.bat` sets `BOUTIQUE_DASHBOARD_WRITES=0` on the dashboard.
+- `monitor/` is a standalone host process (`headless_monitor.py`, plus the Streamlit `dashboard.py`). It writes `telemetry.json` (last 60 samples), `telemetry_log.jsonl` and `SLA_BREACH.flag` every 2 s. Its modules are run as scripts and use flat imports (`import boutique_core as core`), not package imports. Only one process may write telemetry; `monitor.bat` sets `BOUTIQUE_DASHBOARD_WRITES=0` on the dashboard. The dashboard's resilience score (`resilience.py`, pure functions) is a weighted sum of five measured factors (availability from the telemetry log; fault tolerance, recovery, failure handling and detection time from the newest result per service+action in `results/`); a factor with no data drops out and its weight is redistributed.
 - `safety/telemetry.py` (`TelemetryReader`) is the orchestrator's only view of system health: it reads those files and treats stale data (>15 s) as unsafe.
 - `results/STOP` is the kill switch, and `results/active_experiment.json` is the crash-recovery journal (written before injection, cleared after rollback; a present journal blocks new runs until `recover`).
 
