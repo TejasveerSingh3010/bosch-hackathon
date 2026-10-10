@@ -6,7 +6,7 @@ deliberate: the AI planner (day 2) can propose anything it likes, and it still c
 actions without passing the safety layer first.
 """
 from .actions import ACTIONS, ActionOutcome, FailureAction, build_action, describe_actions
-from .docker_cli import Container, DockerCli, DockerError
+from .docker_cli import Container, DockerCli, DockerError, NetworkConn
 from .resolve import TargetError, resolve_target
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "DockerCli",
     "DockerError",
     "FailureAction",
+    "NetworkConn",
     "TargetError",
     "build_action",
     "describe_actions",

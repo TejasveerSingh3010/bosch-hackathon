@@ -11,9 +11,9 @@ actually matters for correctness:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from injector.docker_cli import Container, DockerError
+from injector.docker_cli import Container, DockerError, NetworkConn
 
 
 @dataclass
@@ -27,6 +27,14 @@ class FakeContainer:
     restart_count: int = 0
     exit_code: int | None = None
     started_at: str | None = "2026-10-10T06:00:00.000000000Z"
+    nano_cpus: int | None = None
+    mem_limit: int | None = None
+    #: network name -> aliases. Defaults to the Compose default network, reachable by service name.
+    networks: dict[str, list[str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.networks:
+            self.networks = {f"{self.project}_default": [self.service]}
 
     @property
     def running(self) -> bool:
@@ -45,6 +53,11 @@ class FakeContainer:
             restart_count=self.restart_count,
             restart_policy=self.restart_policy,
             started_at=self.started_at if self.running else None,
+            nano_cpus=self.nano_cpus,
+            mem_limit=self.mem_limit,
+            networks=tuple(
+                NetworkConn(name=n, aliases=tuple(a)) for n, a in self.networks.items()
+            ),
         )
 
 
@@ -58,6 +71,11 @@ class FakeDocker:
         self.self_heal_on_kill = self_heal_on_kill
         #: Set method names here to make them raise, e.g. docker.fail_on = {"start"}.
         self.fail_on: set[str] = set()
+        #: Canned `docker logs` output per container, for the reporter's log-capture tests.
+        self.logs_by_container: dict[str, str] = {}
+        #: Every run_sidecar call, and which targets currently have a netem qdisc installed.
+        self.sidecars: list[dict] = []
+        self.netem_applied: set[str] = set()
 
     # ---- internals ----
     def _get(self, name: str) -> FakeContainer:
@@ -121,6 +139,53 @@ class FakeDocker:
         if not container.paused:
             raise DockerError(f"cannot unpause {name}: container is not paused")
         container.paused = False
+
+    def update(self, name: str, cpus: float | None = None, memory: int | None = None) -> None:
+        self._record("update", name)
+        container = self._get(name)
+        if cpus is not None:
+            container.nano_cpus = int(cpus * 1_000_000_000) or None
+        if memory is not None:
+            container.mem_limit = int(memory) or None
+
+    def network_disconnect(self, network: str, name: str, force: bool = False) -> None:
+        self._record("network_disconnect", name)
+        container = self._get(name)
+        if network not in container.networks:
+            raise DockerError(f"{name} is not connected to {network}")
+        container.networks.pop(network)
+
+    def network_connect(self, network: str, name: str, aliases: tuple[str, ...] = ()) -> None:
+        self._record("network_connect", name)
+        container = self._get(name)
+        container.networks[network] = list(aliases)
+
+    def logs(self, name: str, since: str | None = None, tail: int = 200) -> str:
+        self._record("logs", name)
+        self._get(name)  # raise for an unknown container, like the real CLI
+        return self.logs_by_container.get(name, "")
+
+    def run_sidecar(
+        self,
+        image: str,
+        command: tuple[str, ...],
+        target: str,
+        cap_add: tuple[str, ...] = (),
+        name: str | None = None,
+        remove: bool = True,
+    ) -> str:
+        self._record("run_sidecar", target)
+        self._get(target)  # the target must exist to share its namespace
+        self.sidecars.append({"image": image, "command": tuple(command), "target": target,
+                              "cap_add": tuple(cap_add)})
+        # Model the netem qdisc the sidecar installs/removes, so rollback is observable.
+        if command[:3] == ("tc", "qdisc", "add"):
+            self.netem_applied.add(target)
+        elif command[:3] == ("tc", "qdisc", "del"):
+            if target not in self.netem_applied and "fail_netem_del" in self.fail_on:
+                raise DockerError("Cannot delete qdisc with handle of zero: No such file or directory")
+            self.netem_applied.discard(target)
+        return ""
 
 
 def default_stack(project: str = "online-boutique") -> list[FakeContainer]:
