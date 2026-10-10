@@ -230,6 +230,9 @@ results/demo/
 results/agent_log.jsonl
 reports/latest.*
 
+# Agent 1 (planner): the per-session audit trail (plans, decisions, approvals, conclusion)
+results/plans/
+
 # monitor runtime output
 results/SLA_BREACH.flag
 results/*.tmp
