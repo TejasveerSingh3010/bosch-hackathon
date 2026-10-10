@@ -10,6 +10,7 @@ confirmed rollback, which is what makes `orchestrator recover` possible.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -20,13 +21,14 @@ from typing import Any
 
 from injector.actions import ActionOutcome, FailureAction, build_action
 from injector.docker_cli import Docker, DockerError
+from monitor.log_capture import LogCapture
 from safety.journal import Journal, JournalEntry
 from safety.killswitch import KillSwitch
 from safety.limits import TargetConfig
 from safety.telemetry import TelemetryReader, TelemetryUnavailable, healthy, summarise_phase
 from safety.validator import PlanRejected, ValidatedPlan, explain_plan, validate_plan
 from safety.watchdog import Watchdog
-from schemas import Experiment, ExperimentResult, Phase
+from schemas import Experiment, ExperimentResult, Phase, TimelineEvent
 
 log = logging.getLogger("orchestrator")
 
@@ -55,6 +57,7 @@ class ExperimentRunner:
         self.sleep = sleep
         self.journal = Journal(self.results_dir)
         self.killswitch = KillSwitch(self.results_dir)
+        self._logcap: LogCapture | None = None
 
     # ------------------------------------------------------------------ helpers
     def _containers(self) -> list[Any]:
@@ -73,6 +76,43 @@ class ExperimentRunner:
         path = self.results_dir / f"{result.experiment.id}.json"
         path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         return path
+
+    def _timeline(self, result: ExperimentResult, source: str, event: str) -> None:
+        """Append one structured timeline entry (Agent 2 reads these to separate cause from safety)."""
+        result.timeline.append(
+            TimelineEvent(t=datetime.now().astimezone().isoformat(), source=source, event=event)
+        )
+
+    def _evidence_container_names(self, plan: ValidatedPlan) -> list[str]:
+        """The target plus its direct callers, as container names, for log capture.
+
+        Callers come from results/graph.json (direct_dependents of the target service). Missing or
+        unreadable graph: fall back to the target alone. Never raises - this is best-effort.
+        """
+        names = [plan.container_name]
+        callers: list[str] = []
+        try:
+            graph = json.loads((self.results_dir / "graph.json").read_text(encoding="utf-8"))
+            analysis = (graph.get("analysis") or {}).get(plan.service_name or "", {}) or {}
+            callers = list(analysis.get("direct_dependents") or [])
+        except (OSError, json.JSONDecodeError, AttributeError):
+            callers = []
+        by_service = {c.service: c.name for c in self._containers()}
+        for service in callers:
+            name = by_service.get(service)
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _capture_logs(self, result: ExperimentResult, containers: list[str], phase: str) -> None:
+        """Capture target + caller logs for one phase. Never breaks the experiment."""
+        if self._logcap is None:
+            return
+        try:
+            self._logcap.capture(containers, phase=phase)
+            self._timeline(result, "logs", f"captured logs for {len(containers)} container(s) at {phase}")
+        except Exception as exc:  # noqa: BLE001 - log capture is strictly best-effort
+            result.observations.append(f"log capture at {phase} failed: {exc}")
 
     # ------------------------------------------------------------------ public
     def dry_run(self, experiment: Experiment) -> ValidatedPlan:
@@ -114,10 +154,14 @@ class ExperimentRunner:
         before_start = datetime.now().astimezone() - timedelta(seconds=60)
         result.started_at = datetime.now().astimezone()
 
+        self._logcap = LogCapture(self.docker, self.results_dir, experiment.id)
+        evidence_containers = self._evidence_container_names(plan)
+
         applied: ActionOutcome | None = None
         try:
             applied = self._inject(plan, action, result)
             if applied is not None:
+                self._capture_logs(result, evidence_containers, "injection")
                 self._watch(plan, watchdog, result)
         except KeyboardInterrupt:
             result.verdict = "stopped"
@@ -132,6 +176,7 @@ class ExperimentRunner:
             # never took effect and the journal has already been cleared, so there is nothing to undo.
             if applied is not None:
                 self._rollback(plan, action, result)
+                self._capture_logs(result, evidence_containers, "rollback")
         return self._finish(result, before_start)
 
     # ------------------------------------------------------------------ phases
@@ -191,6 +236,7 @@ class ExperimentRunner:
         entry.pre_state = outcome.pre_state
         self.journal.write(entry)
         result.injected_at = datetime.now().astimezone()
+        self._timeline(result, "injector", f"injected {plan.experiment.action}: {outcome.detail}")
         log.info("injected: %s", outcome.detail)
         return outcome
 
@@ -198,10 +244,12 @@ class ExperimentRunner:
         """Poll telemetry until the duration elapses, the watchdog aborts or someone stops us."""
         deadline = self.clock() + plan.duration_s
         result.verdict = "completed"
+        degraded_seen = False
         while self.clock() < deadline:
             if self.killswitch.engaged():
                 result.verdict = "stopped"
                 result.abort_reason = f"kill switch: {self.killswitch.reason()}"
+                self._timeline(result, "killswitch", result.abort_reason)
                 log.warning("kill switch engaged - rolling back")
                 return
 
@@ -209,13 +257,18 @@ class ExperimentRunner:
             if sample is None:
                 result.verdict = "aborted"
                 result.abort_reason = "telemetry became unreadable - stopping to avoid running blind"
+                self._timeline(result, "runner", result.abort_reason)
                 log.warning(result.abort_reason)
                 return
 
             decision = watchdog.check(sample, age)
+            if decision.degraded and not degraded_seen:
+                degraded_seen = True
+                self._timeline(result, "watchdog", "first degraded sample observed")
             if decision.abort:
                 result.verdict = "aborted"
                 result.abort_reason = decision.reason
+                self._timeline(result, "watchdog", f"abort: {decision.reason}")
                 log.warning("watchdog abort: %s", decision.reason)
                 return
             if decision.reason and not decision.ignored:
@@ -247,10 +300,12 @@ class ExperimentRunner:
             outcome = action.rollback(plan.container_name)
             result.rolled_back_at = datetime.now().astimezone()
             result.observations.append(f"rollback: {outcome.detail}")
+            self._timeline(result, "runner", f"rolled back: {outcome.detail}")
             log.info("rolled back: %s", outcome.detail)
             self.journal.clear()
         except DockerError as exc:
             result.errors.append(f"ROLLBACK FAILED: {exc}")
+            self._timeline(result, "runner", f"ROLLBACK FAILED: {exc}")
             log.error("ROLLBACK FAILED: %s - the journal is kept; run `orchestrator recover`", exc)
 
     def _wait_for_recovery(self, result: ExperimentResult) -> None:
@@ -268,6 +323,7 @@ class ExperimentRunner:
                         result.recovered_at = datetime.fromisoformat(sample["timestamp"])
                     except (KeyError, ValueError):
                         result.recovered_at = datetime.now().astimezone()
+                    self._timeline(result, "runner", "application healthy again (recovery confirmed)")
                     return
             else:
                 confirmed = 0
@@ -276,6 +332,7 @@ class ExperimentRunner:
             f"the application was still not fully healthy {RECOVERY_TIMEOUT_S:.0f}s after rollback - "
             f"worth reporting as a weakness"
         )
+        self._timeline(result, "runner", f"not fully healthy {RECOVERY_TIMEOUT_S:.0f}s after rollback")
 
     def _finish(self, result: ExperimentResult, before_start: datetime) -> ExperimentResult:
         """Measure recovery, compute timings, summarise the phases and write the result file."""
@@ -303,6 +360,9 @@ class ExperimentRunner:
                 result.after = Phase(**summarise_phase(
                     self.telemetry.between(result.rolled_back_at,
                                            result.recovered_at or result.ended_at or result.rolled_back_at)))
+
+        if self._logcap is not None:
+            self._logcap.finalize()  # writes results/<id>.logs/summary.json
 
         path = self._write_result(result)
         log.info("result written to %s", path)

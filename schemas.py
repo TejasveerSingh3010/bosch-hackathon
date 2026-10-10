@@ -100,6 +100,21 @@ class TelemetryPoint(BaseModel):
         )
 
 
+class TimelineEvent(BaseModel):
+    """One entry in the runner's structured timeline of an experiment.
+
+    The timeline is what lets Agent 2 separate "what the attack did" from "what the safety layer
+    did": injection, each watchdog decision, the abort, the rollback and recovery are all recorded
+    here with their own timestamps, independent of the telemetry probes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    t: str = Field(description="ISO timestamp")
+    source: str = Field(description="runner | watchdog | killswitch | logs | injector")
+    event: str
+
+
 class Phase(BaseModel):
     """Aggregated telemetry for one phase of an experiment (before / during / after)."""
 
@@ -148,3 +163,11 @@ class ExperimentResult(BaseModel):
     baseline: dict[str, Any] | None = None
     observations: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+    # --- day-2 additions (all optional, so existing records stay valid) ---
+    #: Structured runner timeline: injection, watchdog decisions, abort, rollback, recovery.
+    timeline: list[TimelineEvent] = Field(default_factory=list)
+    #: The ranking entry a human approved (a RankedAttack as a dict, kept decoupled from agents/).
+    ranked_from: dict[str, Any] | None = None
+    #: Optional campaign grouping for a sequence of experiments.
+    campaign_id: str | None = None
