@@ -1,0 +1,8 @@
+docker
+requests
+pyyaml
+networkx
+matplotlib
+pydantic
+locust
+python-dotenv

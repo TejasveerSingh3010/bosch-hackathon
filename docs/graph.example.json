@@ -1,0 +1,8 @@
+{
+  "services": ["frontend", "productcatalogservice", "cartservice", "redis-cart"],
+  "edges": [
+    { "from": "frontend", "to": "productcatalogservice", "type": "grpc" },
+    { "from": "frontend", "to": "cartservice", "type": "grpc" },
+    { "from": "cartservice", "to": "redis-cart", "type": "tcp" }
+  ]
+}

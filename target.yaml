@@ -1,0 +1,14 @@
+app_name: online-boutique
+compose_project: boutique
+frontend_url: http://localhost:8080
+health_checks:
+  - name: home
+    url: http://localhost:8080/
+  - name: product
+    url: http://localhost:8080/product/OLJCESPC7Z
+# Fill in once the app is running (container names from `docker ps`)
+allowed_containers: []
+thresholds:
+  error_rate: 0.20
+  p95_ms: 2000
+max_experiment_seconds: 120

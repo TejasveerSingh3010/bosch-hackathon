@@ -1,0 +1,10 @@
+{
+  "id": "exp1",
+  "target": "redis-cart",
+  "action": "kill",
+  "params": {},
+  "duration_s": 60,
+  "abort_if": { "error_rate": 0.2, "p95_ms": 2000 },
+  "rollback": "restart",
+  "reason": "Single point of failure for cart and checkout"
+}
