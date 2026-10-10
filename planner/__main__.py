@@ -117,6 +117,18 @@ def cmd_approve(args: argparse.Namespace) -> int:
     if result.verdict == "aborted":
         print("(an abort is a valid, expected outcome - the safety layer did its job)")
     print(f"full record: {config.results_dir / (result.experiment.id + '.json')}")
+
+    # Agent 2 runs automatically after a run (an abort still gets documented).
+    try:
+        from reporter.report import generate_report
+        report = generate_report(
+            config.results_dir, result.experiment.id, client=get_client(config.results_dir)
+        )
+        print(f"report:      {report.failure_origin.component or 'no degradation'} "
+              f"(reports/{result.experiment.id}.md)")
+    except Exception as exc:  # noqa: BLE001 - a reporting failure must not mask the run's verdict
+        print(f"(report generation failed: {exc})", file=sys.stderr)
+
     if result.errors:
         return EXIT_ERROR
     return EXIT_ABORTED if result.verdict in ("aborted", "stopped") else EXIT_OK
