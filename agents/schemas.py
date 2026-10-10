@@ -164,6 +164,7 @@ class Report(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now().astimezone())
     source: Source = "deterministic"
     verdict: str = "unknown"
+    action: str | None = None
     target: str | None = None
     service: str | None = None
     summary: str = ""

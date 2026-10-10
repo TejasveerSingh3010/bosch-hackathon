@@ -135,6 +135,7 @@ def _deterministic_report(pack: EvidencePack) -> Report:
         experiment_id=pack.experiment_id,
         source="deterministic",
         verdict=result.get("verdict", "unknown"),
+        action=(result.get("experiment") or {}).get("action"),
         target=result.get("container"),
         service=service,
         summary=summary,

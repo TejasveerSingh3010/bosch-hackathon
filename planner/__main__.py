@@ -126,8 +126,12 @@ def cmd_approve(args: argparse.Namespace) -> int:
         )
         print(f"report:      {report.failure_origin.component or 'no degradation'} "
               f"(reports/{result.experiment.id}.md)")
+        # Agent 3 re-reads every report and regenerates the recommendations.
+        from advisor.recommender import generate_recommendations
+        recs = generate_recommendations(client=get_client(config.results_dir))
+        print(f"advice:      {len(recs.recommendations)} recommendation(s) (reports/recommendations.md)")
     except Exception as exc:  # noqa: BLE001 - a reporting failure must not mask the run's verdict
-        print(f"(report generation failed: {exc})", file=sys.stderr)
+        print(f"(report/advice generation failed: {exc})", file=sys.stderr)
 
     if result.errors:
         return EXIT_ERROR
