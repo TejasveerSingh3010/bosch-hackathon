@@ -13,11 +13,20 @@ Adding a new failure mode means adding one class and listing it in ACTIONS - not
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import requests
+
 from .docker_cli import Container, Docker, DockerCli, DockerError
+
+#: Hard ceilings for a spike. Duration is capped separately by the experiment schema (600 s).
+SPIKE_MAX_RPS = 20000
+SPIKE_MAX_USERS = 50
+SPIKE_PATHS = ("/", "/cart", "/product/0PUK6V6EV0")
 
 
 @dataclass
@@ -171,8 +180,100 @@ class PauseAction(FailureAction):
         return ActionOutcome(True, f"{container_name} was not paused; nothing to undo")
 
 
+class SpikeAction(FailureAction):
+    """Hold extra HTTP traffic on the Online Boutique frontend.
+
+    Params, all required:
+      * ``rps``   aggregate requests per second
+      * ``users`` concurrent clients sharing that rate
+      * ``time``  seconds to keep sending, unless rollback stops it sooner
+
+    Requests go to ``BOUTIQUE_URL`` (default ``http://localhost:8080``), which is the
+    port-forwarded frontend on Kubernetes and the Compose frontend locally. A plan cannot
+    point this at any other host. Rollback stops the clients; it does not restart a container.
+    """
+
+    name = "spike"
+    description = "Sustain HTTP load on the frontend (params: rps, users, time)"
+
+    def __init__(self, docker: Docker, project: str | None = None, **params: Any) -> None:
+        super().__init__(docker, project, **params)
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+
+    def apply(self, container_name: str) -> ActionOutcome:
+        container = self._snapshot(container_name)
+        pre = self._record_pre(container)
+        if not container.running:
+            return ActionOutcome(
+                False, f"{container_name} is not running (status {container.status})", pre_state=pre
+            )
+        if self._threads:
+            return ActionOutcome(False, "spike is already running", pre_state=pre)
+        try:
+            rps, users, hold = spike_params(self.params)
+        except ValueError as exc:
+            return ActionOutcome(False, str(exc), pre_state=pre)
+
+        self._stop.clear()
+        base = str(self.params.get("base_url") or os.getenv("BOUTIQUE_URL") or "http://localhost:8080").rstrip("/")
+        for index in range(users):
+            thread = threading.Thread(
+                target=self._user, args=(base, index, rps, users, hold),
+                name=f"spike-{index}", daemon=True,
+            )
+            self._threads.append(thread)
+            thread.start()
+        return ActionOutcome(
+            True, f"spike on {base}: {rps} req/s, {users} users, {hold}s", pre_state=pre,
+        )
+
+    def rollback(self, container_name: str) -> ActionOutcome:
+        if not self._threads:
+            return ActionOutcome(True, f"spike on {container_name} was not running; nothing to undo")
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(timeout=6)
+        self._threads.clear()
+        return ActionOutcome(True, f"stopped the traffic spike on {container_name}")
+
+    def _user(self, base: str, index: int, rps: int, users: int, hold: int) -> None:
+        interval = users / rps
+        deadline = time.perf_counter() + hold
+        sent = 0
+        while not self._stop.is_set() and time.perf_counter() < deadline:
+            url = base + SPIKE_PATHS[(index + sent) % len(SPIKE_PATHS)]
+            started = time.perf_counter()
+            try:
+                requests.get(url, timeout=5, allow_redirects=False)
+            except requests.RequestException:
+                pass
+            sent += 1
+            remaining = interval - (time.perf_counter() - started)
+            if remaining > 0 and self._stop.wait(remaining):
+                return
+
+
+def spike_params(params: dict[str, Any]) -> tuple[int, int, int]:
+    """Return (rps, users, time) or raise ValueError."""
+    missing = [key for key in ("rps", "users", "time") if key not in params]
+    if missing:
+        raise ValueError(f"spike requires params {', '.join(missing)} (rps, users, time)")
+    try:
+        rps, users, hold = int(params["rps"]), int(params["users"]), int(params["time"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("spike params rps, users and time must be whole numbers") from exc
+    if not 1 <= rps <= SPIKE_MAX_RPS:
+        raise ValueError(f"spike rps must be from 1 to {SPIKE_MAX_RPS}")
+    if not 1 <= users <= SPIKE_MAX_USERS:
+        raise ValueError(f"spike users must be from 1 to {SPIKE_MAX_USERS}")
+    if not 1 <= hold <= 600:
+        raise ValueError("spike time must be from 1 to 600 seconds")
+    return rps, users, hold
+
+
 ACTIONS: dict[str, type[FailureAction]] = {
-    action.name: action for action in (KillAction, StopAction, PauseAction)
+    action.name: action for action in (KillAction, StopAction, PauseAction, SpikeAction)
 }
 
 

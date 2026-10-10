@@ -1,5 +1,4 @@
 # Everything the project needs. scripts\setup.bat installs this.
-# Keep this in step with monitor/requirements.txt (the monitor-only subset).
 
 # --- chaos engine (injector, safety, orchestrator, mapper) ---
 docker

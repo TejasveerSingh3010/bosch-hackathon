@@ -9,11 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from injector.actions import ACTIONS
+from injector.actions import ACTIONS, spike_params
 
-ActionName = Literal["kill", "stop", "pause"]
+ActionName = Literal["kill", "stop", "pause", "spike"]
 Verdict = Literal["completed", "aborted", "stopped", "failed", "dry_run"]
 
 
@@ -51,6 +51,16 @@ class Experiment(BaseModel):
         if value not in ACTIONS:
             raise ValueError(f"unknown action {value!r}; available: {', '.join(sorted(ACTIONS))}")
         return value
+
+    @model_validator(mode="after")
+    def _spike_params_fit_the_approved_window(self) -> Experiment:
+        if self.action != "spike":
+            return self
+        rps, users, hold = spike_params(self.params)
+        if hold > self.duration_s:
+            raise ValueError("spike params.time cannot be longer than duration_s")
+        self.params = {"rps": rps, "users": users, "time": hold}
+        return self
 
 
 class TelemetryPoint(BaseModel):

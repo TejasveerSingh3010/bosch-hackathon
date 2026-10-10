@@ -127,7 +127,8 @@ if write_error:
 st.divider()
 st.subheader("Chaos / monitoring tests")
 st.caption(f"Run only against your own local/test environment. The restart briefly affects the frontend. "
-           f"Traffic burst: {core.BURST_MAX_REQUESTS} requests max, {core.BURST_MAX_WORKERS} workers max.")
+           f"Traffic burst: {core.BURST_MAX_SECONDS}s max, {core.BURST_MAX_WORKERS} workers max, "
+           f"{core.BURST_MAX_REQUESTS} requests max.")
 
 a1, a2, a3 = st.columns(3)
 with a1:
@@ -146,16 +147,22 @@ with a1:
 
 with a2:
     st.markdown("### 📈 Bounded traffic burst")
-    burst_requests = st.number_input("Requests", min_value=1, max_value=core.BURST_MAX_REQUESTS, value=min(100, core.BURST_MAX_REQUESTS), step=50)
+    burst_seconds = st.number_input(
+        "Duration (seconds)", min_value=1, max_value=core.BURST_MAX_SECONDS,
+        value=min(30, core.BURST_MAX_SECONDS), step=5,
+    )
     burst_workers = st.number_input("Concurrent workers", min_value=1, max_value=core.BURST_MAX_WORKERS, value=5)
-    st.write("GET requests across the three monitored pages.")
+    st.write("Keeps sending GETs across the three monitored pages until the duration ends.")
     if st.button("Run traffic burst", width="stretch"):
         try:
-            with st.spinner("Sending bounded traffic burst…"):
-                burst = core.bounded_traffic_burst(base_url, int(burst_requests), int(burst_workers))
+            with st.spinner(f"Sending traffic for {int(burst_seconds)}s…"):
+                burst = core.bounded_traffic_burst(
+                    base_url, workers=int(burst_workers), duration_s=int(burst_seconds),
+                )
             st.session_state.action_message = (
                 "info",
-                f"Traffic test finished: {burst['total']} requests, {burst['errors']} errors ({burst['error_rate_pct']}%), "
+                f"Traffic burst ran {burst['elapsed_s']}s: {burst['total']} requests, "
+                f"{burst['errors']} errors ({burst['error_rate_pct']}%), "
                 f"mean {burst['mean_latency_ms']} ms, p95 {burst['p95_latency_ms']} ms.")
         except Exception as exc:  # noqa: BLE001
             st.session_state.action_message = ("error", str(exc)[:400])

@@ -51,7 +51,7 @@ def test_a_result_round_trips_through_json():
 def test_actions_subcommand_lists_every_failure_mode(capsys):
     assert main(["actions"]) == 0
     out = capsys.readouterr().out
-    assert "kill" in out and "stop" in out and "pause" in out
+    assert "kill" in out and "stop" in out and "pause" in out and "spike" in out
 
 
 def test_flags_build_an_experiment_with_a_generated_id():
@@ -69,6 +69,29 @@ def test_a_plan_file_can_be_overridden_by_flags(tmp_path):
     args = build_parser().parse_args(["run", str(path), "--action", "pause", "--duration", "15"])
     experiment = _experiment_from_args(args)
     assert (experiment.id, experiment.action, experiment.duration_s) == ("fromfile", "pause", 15)
+
+
+def test_spike_flags_become_rps_users_and_time():
+    args = build_parser().parse_args(
+        ["run", "--target", "frontend", "--action", "spike", "--duration", "20", "--rps", "15", "--users", "4"]
+    )
+    experiment = _experiment_from_args(args)
+    assert experiment.duration_s == 20
+    assert experiment.params == {"rps": 15, "users": 4, "time": 20}
+
+
+def test_spike_without_a_rate_or_users_is_refused():
+    args = build_parser().parse_args(["run", "--target", "frontend", "--action", "spike", "--duration", "20"])
+    with pytest.raises(SystemExit, match="--rps"):
+        _experiment_from_args(args)
+
+
+def test_spike_time_cannot_outlast_the_approved_duration():
+    with pytest.raises(ValueError, match="duration_s"):
+        Experiment(
+            id="s1", target="frontend", action="spike", duration_s=10,
+            params={"rps": 5, "users": 2, "time": 30},
+        )
 
 
 def test_run_without_a_target_explains_what_is_missing():

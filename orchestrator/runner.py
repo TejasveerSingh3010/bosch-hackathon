@@ -95,8 +95,11 @@ class ExperimentRunner:
         plan = validate_plan(experiment, self.config, self._containers(), self.telemetry)
         log.info("plan accepted\n%s", explain_plan(plan))
 
-        action = build_action(experiment.action, self.docker, self.config.compose_project,
-                              **experiment.params)
+        params = dict(experiment.params)
+        if experiment.action == "spike":
+            # The plan cannot choose the host. target.yaml (or BOUTIQUE_URL) does.
+            params["base_url"] = os.getenv("BOUTIQUE_URL", self.config.frontend_url).rstrip("/")
+        action = build_action(experiment.action, self.docker, self.config.compose_project, **params)
         watchdog = Watchdog(plan.thresholds, target_container=plan.container_name)
         result = ExperimentResult(
             experiment=experiment,

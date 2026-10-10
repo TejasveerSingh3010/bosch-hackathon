@@ -13,7 +13,7 @@ import re
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,8 +38,9 @@ FLAG_FILE = OUT_DIR / "SLA_BREACH.flag"
 LOG_PATH = OUT_DIR / "telemetry_log.jsonl"
 LOG_MAX_BYTES = int(os.getenv("BOUTIQUE_LOG_MAX_MB", "60")) * 1024 * 1024  # rotates once to .jsonl.1
 JOURNEY_EVERY = int(os.getenv("BOUTIQUE_JOURNEY_EVERY", "5"))  # checkout probe every N samples; 0 = off
-BURST_MAX_REQUESTS = int(os.getenv("BOUTIQUE_BURST_MAX_REQUESTS", "10000"))
+BURST_MAX_REQUESTS = int(os.getenv("BOUTIQUE_BURST_MAX_REQUESTS", "20000"))
 BURST_MAX_WORKERS = int(os.getenv("BOUTIQUE_BURST_MAX_WORKERS", "20"))
+BURST_MAX_SECONDS = int(os.getenv("BOUTIQUE_BURST_MAX_SECONDS", "600"))
 
 ENDPOINT_PATHS = {
     "Home": "/",
@@ -196,9 +197,23 @@ def _p95(values):
     return values[max(0, int(0.95 * len(values) + 0.999) - 1)] if values else 0
 
 
-def bounded_traffic_burst(base, total_requests=10000, workers=5):
-    """GET burst across the monitored pages. Capped by BOUTIQUE_BURST_MAX_REQUESTS / _MAX_WORKERS."""
+def bounded_traffic_burst(base, total_requests=None, workers=5, duration_s=None):
+    """GET burst across the monitored pages.
+
+    With duration_s, the workers keep requesting until that many seconds have passed.
+    Requests already in flight are allowed to finish; no new ones start after the deadline.
+    total_requests (default BOUTIQUE_BURST_MAX_REQUESTS) is a hard stop either way.
+    Workers are capped by BOUTIQUE_BURST_MAX_WORKERS and duration by BOUTIQUE_BURST_MAX_SECONDS.
+    """
     urls = [base + p for p in ENDPOINT_PATHS.values()]
+    workers = max(1, min(int(workers), BURST_MAX_WORKERS))
+    cap = BURST_MAX_REQUESTS if total_requests is None else int(total_requests)
+    cap = max(1, min(cap, BURST_MAX_REQUESTS))
+    if duration_s is not None:
+        duration_s = max(1, min(int(duration_s), BURST_MAX_SECONDS))
+        deadline = time.perf_counter() + duration_s
+    else:
+        deadline = None
 
     def hit(i):
         started = time.perf_counter()
@@ -209,20 +224,35 @@ def bounded_traffic_burst(base, total_requests=10000, workers=5):
             ok = False
         return {"latency_ms": round((time.perf_counter() - started) * 1000, 2), "success": ok}
 
-    total_requests = max(1, min(int(total_requests), BURST_MAX_REQUESTS))
-    workers = max(1, min(int(workers), BURST_MAX_WORKERS))
     results = []
+    started_at = time.perf_counter()
+    sent = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in as_completed([pool.submit(hit, i) for i in range(total_requests)]):
-            results.append(future.result())
+        if deadline is None:
+            for future in as_completed([pool.submit(hit, i) for i in range(cap)]):
+                results.append(future.result())
+        else:
+            pending = set()
+            while sent < cap and len(pending) < workers and time.perf_counter() < deadline:
+                pending.add(pool.submit(hit, sent))
+                sent += 1
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    results.append(future.result())
+                while sent < cap and len(pending) < workers and time.perf_counter() < deadline:
+                    pending.add(pool.submit(hit, sent))
+                    sent += 1
     errors = sum(not x["success"] for x in results)
     lats = [x["latency_ms"] for x in results]
     return {
         "total": len(results),
         "errors": errors,
         "error_rate_pct": round(100 * errors / max(1, len(results)), 2),
-        "mean_latency_ms": round(sum(lats) / max(1, len(lats)), 2),
+        "mean_latency_ms": round(sum(lats) / max(1, len(lats)), 2) if lats else 0,
         "p95_latency_ms": _p95(lats),
+        "elapsed_s": round(time.perf_counter() - started_at, 2),
+        "duration_s": duration_s,
     }
 
 

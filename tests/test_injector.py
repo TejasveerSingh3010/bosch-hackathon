@@ -1,6 +1,9 @@
 """Every action must apply, and - more importantly - must always roll back."""
 from __future__ import annotations
 
+import time
+from unittest.mock import MagicMock
+
 import pytest
 
 from injector.actions import build_action
@@ -132,6 +135,41 @@ def test_pre_state_is_recorded_so_recovery_knows_what_to_restore(docker):
     outcome = action_for("stop", docker).apply(TARGET)
     assert outcome.pre_state["running"] is True
     assert outcome.pre_state["restart_policy"] == "unless-stopped"
+
+
+def test_spike_sends_until_rollback_stops_it(docker, monkeypatch):
+    calls: list[str] = []
+
+    def fake_get(url, timeout=5, allow_redirects=False):
+        calls.append(url)
+        response = MagicMock()
+        response.status_code = 200
+        return response
+
+    monkeypatch.setattr("injector.actions.requests.get", fake_get)
+    action = action_for("spike", docker, rps=20, users=2, time=5)
+    outcome = action.apply(TARGET)
+    assert outcome.ok and "20 req/s" in outcome.detail
+    time.sleep(0.35)
+    sent = len(calls)
+    assert sent >= 4
+    assert all(url.startswith("http://localhost:8080/") for url in calls)
+
+    assert "stopped the traffic spike" in action.rollback(TARGET).detail
+    time.sleep(0.25)
+    assert len(calls) - sent <= 2
+    assert "nothing to undo" in action.rollback(TARGET).detail
+
+
+def test_spike_refuses_a_rate_above_the_cap(docker):
+    outcome = action_for("spike", docker, rps=20_001, users=2, time=5).apply(TARGET)
+    assert not outcome.ok and "rps" in outcome.detail
+
+
+def test_spike_refuses_a_stopped_container(docker):
+    docker.containers[TARGET].status = "exited"
+    outcome = action_for("spike", docker, rps=5, users=1, time=5).apply(TARGET)
+    assert not outcome.ok and "not running" in outcome.detail
 
 
 def test_a_container_outside_the_project_is_not_listed(docker):

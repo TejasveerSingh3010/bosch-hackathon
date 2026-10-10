@@ -3,6 +3,7 @@
     python -m orchestrator actions                         list the failure modes
     python -m orchestrator targets                         list containers and whether each is allowed
     python -m orchestrator run --target adservice --action kill --duration 30
+    python -m orchestrator run --target frontend --action spike --rps 20 --users 5 --duration 30
     python -m orchestrator run docs/experiment.example.json
     python -m orchestrator run ... --dry-run               validate and explain, change nothing
     python -m orchestrator stop                            engage the kill switch (from another window)
@@ -17,7 +18,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from injector.actions import describe_actions
+from injector.actions import ACTIONS, describe_actions
 from injector.docker_cli import DockerCli, DockerError
 from safety.killswitch import KillSwitch
 from safety.limits import TargetConfig
@@ -51,18 +52,42 @@ def _experiment_from_args(args: argparse.Namespace) -> Experiment:
             payload["action"] = args.action
         if args.duration:
             payload["duration_s"] = args.duration
+        _merge_spike_flags(payload, args)
         return Experiment.model_validate(payload)
 
     if not (args.target and args.action):
         raise SystemExit("give a plan file, or both --target and --action (see --help)")
     stamp = datetime.now().strftime("%H%M%S")
-    return Experiment(
-        id=args.id or f"{args.action}-{args.target}-{stamp}".replace("_", "-"),
-        target=args.target,
-        action=args.action,
-        duration_s=args.duration or 30,
-        reason=args.reason or "run from the command line",
-    )
+    duration = args.duration or 30
+    payload = {
+        "id": args.id or f"{args.action}-{args.target}-{stamp}".replace("_", "-"),
+        "target": args.target,
+        "action": args.action,
+        "duration_s": duration,
+        "reason": args.reason or "run from the command line",
+    }
+    _merge_spike_flags(payload, args)
+    return Experiment.model_validate(payload)
+
+
+def _merge_spike_flags(payload: dict, args: argparse.Namespace) -> None:
+    """Copy --rps, --users and --duration into a spike plan. Time is the experiment duration."""
+    action = payload.get("action")
+    if action != "spike" and args.rps is None and args.users is None:
+        return
+    params = dict(payload.get("params") or {})
+    if args.rps is not None:
+        params["rps"] = args.rps
+    if args.users is not None:
+        params["users"] = args.users
+    if args.duration:
+        params["time"] = args.duration
+    elif "time" not in params and payload.get("duration_s"):
+        params["time"] = payload["duration_s"]
+    if action == "spike" and ("rps" not in params or "users" not in params or "time" not in params):
+        raise SystemExit("spike requires --rps, --users and --duration (requests/second, users, seconds)")
+    if params and action == "spike":
+        payload["params"] = params
 
 
 def cmd_actions(_: argparse.Namespace) -> int:
@@ -200,8 +225,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run one experiment")
     run.add_argument("plan", nargs="?", help="experiment JSON file (see docs/experiment.example.json)")
     run.add_argument("--target", help="Compose service or container name")
-    run.add_argument("--action", choices=["kill", "stop", "pause"])
-    run.add_argument("--duration", type=int, help="seconds to hold the failure (default 30)")
+    run.add_argument("--action", choices=sorted(ACTIONS))
+    run.add_argument("--duration", type=int, help="seconds to hold the failure (default 30); for spike this is the time")
+    run.add_argument("--rps", type=int, help="spike only: requests per second, shared across --users")
+    run.add_argument("--users", type=int, help="spike only: number of concurrent clients")
     run.add_argument("--id", help="experiment id, used for the result filename")
     run.add_argument("--reason", help="why this experiment is worth running")
     run.add_argument("--poll", type=float, default=2.0, help="watchdog poll interval, seconds")
