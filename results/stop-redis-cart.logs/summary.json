@@ -1,0 +1,63 @@
+{
+  "online-boutique-redis-cart-1": {
+    "container": "online-boutique-redis-cart-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [
+      {
+        "kind": "timeout",
+        "first_line": "1:M 10 Oct 2026 17:59:28.511 * <search> gc: ON, prefix min length: 2, min word length to stem: 4, prefix max expansions: 200, query timeout (ms): 500, timeout policy: return, oom policy: return, cursor read size: 1000, cursor max idle (ms): 300000, max doctable size: 1000000, max number of search re",
+        "count": 4
+      },
+      {
+        "kind": "error",
+        "first_line": "1:M 10 Oct 2026 20:07:55.164 * <bf> \t{ bf-error-rate       :      0.01 }",
+        "count": 1
+      }
+    ],
+    "tail": [
+      "1:M 10 Oct 2026 20:07:55.274 * Done loading RDB, keys loaded: 1999, keys expired: 0.",
+      "1:M 10 Oct 2026 20:07:55.274 * <search> LOAD end disk=rebuild-from-keyspace ok=true",
+      "1:M 10 Oct 2026 20:07:55.274 * DB loaded from disk: 0.008 seconds",
+      "1:M 10 Oct 2026 20:07:55.274 * Ready to accept connections tcp",
+      "1:M 10 Oct 2026 20:07:55.275 # WARNING: Redis does not require authentication and is not protected by network restrictions. Redis will accept connections from any IP address on any network interface."
+    ],
+    "note": ""
+  },
+  "online-boutique-cartservice-1": {
+    "container": "online-boutique-cartservice-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [
+      {
+        "kind": "error",
+        "first_line": "Error status code 'FailedPrecondition' with detail 'Can't access cart storage. StackExchange.Redis.RedisConnectionException: SocketFailure (ReadSocketError/ConnectionReset, last-recv: 19) on redis-cart:6379/Interactive, Idle/Faulted, last: HMGET, origin: ReadFromPipe, outstanding: 1, last-read: 0s a",
+        "count": 28
+      },
+      {
+        "kind": "connection_reset",
+        "first_line": "---> Pipelines.Sockets.Unofficial.ConnectionResetException: Connection reset by peer",
+        "count": 2
+      },
+      {
+        "kind": "timeout",
+        "first_line": "Error status code 'FailedPrecondition' with detail 'Can't access cart storage. StackExchange.Redis.RedisConnectionException: The message timed out in the backlog attempting to send because no connection became available (5000ms) - Last Connection Exception: It was not possible to connect to the redi",
+        "count": 44
+      }
+    ],
+    "tail": [
+      "         at Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.GetAndRefreshAsync(String key, Boolean getData, CancellationToken token)",
+      "         at Microsoft.Extensions.Caching.StackExchangeRedis.RedisCache.GetAsync(String key, CancellationToken token)",
+      "         at cartservice.cartstore.RedisCartStore.GetCartAsync(String userId) in /app/cartstore/RedisCartStore.cs:line 90' raised.",
+      "GetCartAsync called with userId=fe2a0601-356e-496c-9288-65afa08c5d2a",
+      "Checking CartService Health"
+    ],
+    "note": ""
+  }
+}

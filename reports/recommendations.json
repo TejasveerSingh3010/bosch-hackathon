@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-10-11T02:04:37.433977+05:30",
+  "source": "deterministic",
+  "model": null,
+  "recommendations": [
+    {
+      "id": "R1-single_point_of_failure",
+      "priority": 1,
+      "problem": "A pause on cartservice caused Cart, Home, Product to fail",
+      "root_cause": "single_point_of_failure",
+      "fix": "Give callers a short client timeout and a retry/circuit-breaker so a hung dependency fails fast instead of tying up connections (timeouts live in the caller's code, so this needs an upstream change; a Compose `healthcheck` with `depends_on: condition: service_healthy` mitigates it meanwhile).",
+      "scope": "upstream_code",
+      "expected_effect": "removes or reduces the failure a pause on cartservice caused",
+      "metric": "p95_latency_ms, error_rate_pct",
+      "effort": "M",
+      "risk": "medium",
+      "confidence": 0.75,
+      "needs_more_evidence": false,
+      "verification": {
+        "attack": {
+          "id": "verify-pause-cartservice",
+          "target": "cartservice",
+          "action": "pause",
+          "params": {},
+          "duration_s": 30,
+          "abort_if": {
+            "error_rate": null,
+            "p95_ms": null,
+            "max_collateral_unready": null
+          },
+          "rollback": "auto",
+          "reason": "verify the fix for pause on cartservice"
+        },
+        "attack_summary": "pause on cartservice",
+        "success_criteria": "re-run this attack; the fix works if the previously-failed pages stay up, the peak error rate stays under the abort threshold, and recovery is no slower than before"
+      },
+      "report_ids": [
+        "pause-cartservice"
+      ],
+      "evidence_refs": [
+        "pause-cartservice",
+        "E8",
+        "E13",
+        "E16",
+        "E5"
+      ]
+    },
+    {
+      "id": "R2-single_point_of_failure",
+      "priority": 2,
+      "problem": "A stop on redis-cart caused a aborted verdict",
+      "root_cause": "single_point_of_failure",
+      "fix": "Evidence is thin. Before changing anything, re-run a stop on redis-cart with logging on to confirm the failure mode. Candidate fix: Run a second replica of this service (compose `deploy.replicas: 2` behind the frontend's client-side load balancing), or add a graceful fallback so its outage does not fail the page.",
+      "scope": "compose",
+      "expected_effect": "removes or reduces the failure a stop on redis-cart caused",
+      "metric": "error_rate_pct on the affected pages",
+      "effort": "L",
+      "risk": "medium",
+      "confidence": 0.35,
+      "needs_more_evidence": true,
+      "verification": {
+        "attack": {
+          "id": "verify-stop-redis-cart",
+          "target": "redis-cart",
+          "action": "stop",
+          "params": {},
+          "duration_s": 30,
+          "abort_if": {
+            "error_rate": null,
+            "p95_ms": null,
+            "max_collateral_unready": null
+          },
+          "rollback": "auto",
+          "reason": "verify the fix for stop on redis-cart"
+        },
+        "attack_summary": "stop on redis-cart",
+        "success_criteria": "re-run this attack; the fix works if the previously-failed pages stay up, the peak error rate stays under the abort threshold, and recovery is no slower than before"
+      },
+      "report_ids": [
+        "stop-redis-cart"
+      ],
+      "evidence_refs": [
+        "stop-redis-cart",
+        "E2"
+      ]
+    }
+  ],
+  "praise": [
+    {
+      "statement": "these pages kept working throughout: Cart, Checkout, Home, Product",
+      "evidence_refs": [
+        "cpu-throttle-cartservice",
+        "E3"
+      ]
+    },
+    {
+      "statement": "the application tolerated the fault: no page probe failed while it was in place",
+      "evidence_refs": [
+        "cpu-throttle-cartservice",
+        "E3"
+      ]
+    },
+    {
+      "statement": "these pages kept working throughout: Checkout",
+      "evidence_refs": [
+        "pause-cartservice",
+        "E5"
+      ]
+    }
+  ],
+  "notes": []
+}

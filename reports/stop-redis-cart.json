@@ -1,0 +1,92 @@
+{
+  "experiment_id": "stop-redis-cart",
+  "generated_at": "2026-10-10T20:31:46.845912Z",
+  "source": "deterministic",
+  "verdict": "aborted",
+  "action": "stop",
+  "target": "online-boutique-redis-cart-1",
+  "service": "redis-cart",
+  "summary": "stop on redis-cart: verdict aborted; no degradation observed",
+  "failure_origin": {
+    "component": null,
+    "at": null,
+    "is_injected_target": null,
+    "evidence_ids": [],
+    "note": "no degradation was observed in the evidence window"
+  },
+  "propagation": [],
+  "impact": {
+    "failed_endpoints": [],
+    "error_types": {},
+    "peak_error_rate_pct": 0.0,
+    "peak_p95_ms": 0.0,
+    "baseline_p95_ms": null,
+    "evidence_ids": [
+      "E2"
+    ]
+  },
+  "timings": {
+    "detection_seconds": null,
+    "recovery_seconds": 0.0,
+    "self_healed": false,
+    "evidence_ids": [
+      "E2"
+    ]
+  },
+  "what_worked": [],
+  "anomalies": [],
+  "unknowns": [
+    "no telemetry samples were found for the evidence window",
+    "no container logs were captured, so the underlying error text is unknown"
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "source": "graph",
+      "at": null,
+      "summary": "redis-cart: criticality 85.0, called by ['cartservice', 'frontend', 'checkoutservice']"
+    },
+    {
+      "id": "E2",
+      "source": "result",
+      "at": null,
+      "summary": "verdict aborted; detection Nones, recovery 0.0s; abort: telemetry went stale (16s old, limit 15s) - monitoring lost, stopping to be safe"
+    },
+    {
+      "id": "E3",
+      "source": "timeline",
+      "at": "2026-10-10T20:31:27.810357+00:00",
+      "summary": "[injector] injected stop: stopped online-boutique-redis-cart-1"
+    },
+    {
+      "id": "E4",
+      "source": "timeline",
+      "at": "2026-10-10T20:31:27.810871+00:00",
+      "summary": "[logs] captured logs for 1 container(s) at injection"
+    },
+    {
+      "id": "E5",
+      "source": "timeline",
+      "at": "2026-10-10T20:31:43.834341+00:00",
+      "summary": "[watchdog] abort: telemetry went stale (16s old, limit 15s) - monitoring lost, stopping to be safe"
+    },
+    {
+      "id": "E6",
+      "source": "timeline",
+      "at": "2026-10-10T20:31:44.836868+00:00",
+      "summary": "[runner] rolled back: running again"
+    },
+    {
+      "id": "E7",
+      "source": "timeline",
+      "at": "2026-10-10T20:31:44.837342+00:00",
+      "summary": "[logs] captured logs for 1 container(s) at rollback"
+    },
+    {
+      "id": "E8",
+      "source": "timeline",
+      "at": "2026-10-10T20:31:46.840633+00:00",
+      "summary": "[runner] application healthy again (recovery confirmed)"
+    }
+  ]
+}

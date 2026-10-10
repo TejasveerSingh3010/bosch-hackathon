@@ -1,0 +1,53 @@
+{
+  "online-boutique-cartservice-1": {
+    "container": "online-boutique-cartservice-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [],
+    "tail": [
+      "Checking CartService Health",
+      "GetCartAsync called with userId=1bb0c377-7552-44e2-8ca5-efaa31b5c46c",
+      "GetCartAsync called with userId=4c58f0d2-63ec-45ff-a2e1-0ebe2b288a79",
+      "GetCartAsync called with userId=143ad2ca-db0a-4cb0-89fa-badc6554edd1",
+      "GetCartAsync called with userId=40ebb2bf-4905-4d10-83b1-d2553d72206a"
+    ],
+    "note": ""
+  },
+  "online-boutique-checkoutservice-1": {
+    "container": "online-boutique-checkoutservice-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [],
+    "tail": [
+      "{\"message\":\"payment went through (transaction_id: 149c4d61-bc4c-4892-94ce-87e5b960c248)\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:20:59.778885748Z\"}",
+      "{\"message\":\"order confirmation email sent to \\\"davissean@example.com\\\"\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:20:59.783178473Z\"}",
+      "{\"message\":\"[PlaceOrder] user_id=\\\"cafa9499-ab5f-4733-aed1-e7027c55c6e1\\\" user_currency=\\\"USD\\\"\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:21:00.48968314Z\"}",
+      "{\"message\":\"payment went through (transaction_id: d689ea19-f658-410a-bc73-1467eee83331)\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:21:00.500774179Z\"}",
+      "{\"message\":\"order confirmation email sent to \\\"monitor@example.com\\\"\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:21:00.507069981Z\"}"
+    ],
+    "note": ""
+  },
+  "online-boutique-frontend-1": {
+    "container": "online-boutique-frontend-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [],
+    "tail": [
+      "{\"http.req.id\":\"d6b74ae0-4ff2-4595-a762-ac86935d8c23\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"message\":\"ENV_PLATFORM is: local\",\"session\":\"596b2c0a-3d6f-4ca8-a62b-d101fa114c0f\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:21:00.948127849Z\"}",
+      "{\"http.req.id\":\"d6b74ae0-4ff2-4595-a762-ac86935d8c23\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"http.resp.bytes\":10473,\"http.resp.status\":200,\"http.resp.took_ms\":25,\"message\":\"request complete\",\"session\":\"596b2c0a-3d6f-4ca8-a62b-d101fa114c0f\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:21:00.950432756Z\"}",
+      "{\"http.req.id\":\"a30e39ee-e645-4274-84d9-5b1bc6149822\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/2ZYFJ3GM2N\",\"message\":\"request started\",\"session\":\"fe2a0601-356e-496c-9288-65afa08c5d2a\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:21:01.045234664Z\"}",
+      "{\"currency\":\"USD\",\"http.req.id\":\"a30e39ee-e645-4274-84d9-5b1bc6149822\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/2ZYFJ3GM2N\",\"id\":\"2ZYFJ3GM2N\",\"message\":\"serving product page\",\"session\":\"fe2a0601-356e-496c-9288-65afa08c5d2a\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:21:01.045441847Z\"}",
+      "{\"http.req.id\":\"a30e39ee-e645-4274-84d9-5b1bc6149822\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/2ZYFJ3GM2N\",\"http.resp.bytes\":7963,\"http.resp.status\":200,\"http.resp.took_ms\":19,\"message\":\"request complete\",\"session\":\"fe2a0601-356e-496c-9288-65afa08c5d2a\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:21:01.065086922Z\"}"
+    ],
+    "note": ""
+  }
+}

@@ -1,8 +1,7 @@
-"""The LLM seam: one place the real model is wired in later, and the only place it ever will be.
+"""The LLM seam: one place the real model is wired in, and the only place it ever will be.
 
-Phase 1 ships with **no real LLM**. The whole three-agent pipeline runs offline because every agent
-has a deterministic implementation (see each agent's module); the LLM, when it arrives, replaces one
-ranking/writing step behind this interface and never the safety layer.
+Phase 1 ships a deterministic pipeline that runs with no key. When a key is set, this module makes
+the real call behind a provider-neutral interface and never touches the safety layer.
 
 What this module guarantees, so the agents do not each reinvent it:
 
@@ -13,19 +12,24 @@ What this module guarantees, so the agents do not each reinvent it:
   * **Retry once, then fail loudly.** On a validation error the call is retried a single time with
     the error appended to the prompt; a second failure raises `LLMOutputError` and the raw text is
     saved to `results/` so a human can see exactly what came back.
+  * **Provider failover.** `RealClient` tries the primary provider, then an optional fallback, on a
+    rate limit (HTTP 429) or an unavailable server (5xx / network). When every provider fails the
+    call raises, and each agent catches that and keeps its deterministic result (constraint 8), so
+    a demo never blocks even when the free-tier quota is exhausted.
   * **An audit trail.** Every call is appended to `results/agent_log.jsonl` with the agent name,
     model, a hash of the prompt, the evidence ids that went in and the output that came out.
-  * **Lazy configuration.** `LLM_API_KEY`, `LLM_PROVIDER` and `LLM_MODEL` are read from the
-    environment / `.env` only when a client is actually built, never at import time, so importing an
-    agent never requires a key.
+  * **Lazy configuration.** `LLM_API_KEY`, `LLM_PROVIDER` and `LLM_MODEL` (and the optional
+    `LLM_FALLBACK_*` trio) are read from the environment / `.env` only when a client is actually
+    built, never at import time, so importing an agent never requires a key.
 
-The seam for the real integration is deliberately small: `RealClient._complete` is the single
-`TODO(llm)` method to fill in. Everything else - validation, retry, logging - already works.
+Supported providers are `gemini` (Google AI Studio) and `groq`; any other name raises
+`NotConfigured`, leaving the seam open for later providers.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
@@ -43,20 +47,43 @@ ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_TOKENS = 1536
 
+#: Where each provider's OpenAI-compatible chat endpoint lives. Gemini has its own shape below.
+_OPENAI_BASE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "openai": "https://api.openai.com/v1",
+}
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+#: (connect timeout, read timeout) in seconds. Reads are short because max_tokens is capped.
+_HTTP_TIMEOUT = (10, 90)
+
+log = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
 
 
 class NotConfigured(RuntimeError):
-    """A real LLM call was attempted but no provider is wired in yet (the Phase 1 state).
+    """A real LLM call was attempted for a provider that is not implemented.
 
-    This is never raised during normal Phase 1 operation: with no key set, `get_client` returns
-    None and the agents take their deterministic path. It is raised only if someone sets a key
-    before the real client is implemented, which is exactly the seam left for later.
+    With no key set, `get_client` returns None and the agents take their deterministic path. This is
+    raised only when `LLM_PROVIDER` names something other than a supported provider, which is the
+    seam left for adding more providers later.
     """
 
 
 class LLMOutputError(RuntimeError):
     """The model's output did not validate even after one retry. The raw text has been saved."""
+
+
+class LLMProviderError(RuntimeError):
+    """Every configured provider failed (rate limit, network error, or a bad response).
+
+    Each agent catches this and keeps its deterministic result, so the pipeline never blocks.
+    """
+
+
+class _Transient(RuntimeError):
+    """An internal signal that a provider failed in a way worth failing over for (429 / 5xx)."""
 
 
 def _load_env_file(path: Path | None = None) -> dict[str, str]:
@@ -247,12 +274,12 @@ class StubClient(LLMClient):
 
 
 class RealClient(LLMClient):
-    """Placeholder for the real provider. Everything is wired except the one network call.
+    """The real provider client: gemini (Google AI Studio) and groq, with failover between them.
 
-    When the LLM is added, implement `_complete` against the chosen provider's SDK using
-    `self.provider`, `self.model` and `self.api_key` (all read from `.env`), and delete the
-    `raise NotConfigured`. No other code changes: validation, retry, logging and the agent call
-    sites already treat this exactly like the stub.
+    `generate`, validation, the single retry, the raw dump and the audit log all live in the base
+    class and are unchanged. This subclass only turns one prompt into raw assistant text, trying the
+    primary provider and then the optional fallback. Networking uses `requests` (already a project
+    dependency) and the providers' REST APIs directly, so no provider SDK is needed.
     """
 
     def __init__(
@@ -261,37 +288,171 @@ class RealClient(LLMClient):
         model: str,
         api_key: str,
         results_dir: Path | str = DEFAULT_RESULTS_DIR,
+        *,
+        fallback_provider: str = "",
+        fallback_model: str = "",
+        fallback_api_key: str = "",
     ) -> None:
         super().__init__(results_dir)
         self.provider = provider or "unset"
         self.model = model or "unset"
         self.api_key = api_key
+        self.fallback_provider = fallback_provider or ""
+        self.fallback_model = fallback_model or ""
+        self.fallback_api_key = fallback_api_key or ""
 
-    def _complete(self, system: str, user: str, *, temperature: float, max_tokens: int) -> str:  # noqa: ARG002
-        # TODO(llm): call self.provider's chat/messages API with system+user, temperature and
-        # max_tokens, and return the raw assistant text. This is the only integration point.
-        raise NotConfigured(
-            f"the real LLM client for provider {self.provider!r} is not implemented yet "
-            f"(Phase 1 ships with the stub only). Unset LLM_API_KEY to use the deterministic path."
-        )
+    def _providers(self) -> list[dict[str, str]]:
+        """The ordered list of providers to try: primary, then the fallback if its key is set."""
+        chain = [{
+            "kind": self.provider.lower(),
+            "name": self.provider,
+            "model": self.model,
+            "api_key": self.api_key,
+        }]
+        if self.fallback_api_key:
+            chain.append({
+                "kind": self.fallback_provider.lower(),
+                "name": self.fallback_provider or "fallback",
+                "model": self.fallback_model,
+                "api_key": self.fallback_api_key,
+            })
+        return chain
+
+    def _complete(self, system: str, user: str, *, temperature: float, max_tokens: int) -> str:
+        chain = self._providers()
+        errors: list[str] = []
+        for index, prov in enumerate(chain):
+            is_last = index == len(chain) - 1
+            try:
+                if prov["kind"] in ("gemini", "google"):
+                    return self._complete_gemini(prov, system, user, temperature, max_tokens)
+                if prov["kind"] in _OPENAI_BASE_URLS:
+                    return self._complete_openai(prov, system, user, temperature, max_tokens)
+                raise NotConfigured(
+                    f"the real LLM client for provider {prov['name']!r} is not implemented yet "
+                    f"(supported: gemini, groq). Unset LLM_API_KEY to use the deterministic path."
+                )
+            except NotConfigured:
+                if is_last:
+                    raise
+                errors.append(f"{prov['name']}: provider not implemented")
+            except _Transient as exc:
+                log.warning("LLM provider %s unavailable (will fail over if possible): %s",
+                            prov["name"], exc)
+                errors.append(f"{prov['name']}: {exc}")
+                if is_last:
+                    raise LLMProviderError("every LLM provider failed: " + "; ".join(errors)) from exc
+            except Exception as exc:  # noqa: BLE001 - surface as a provider error; agents fall back
+                log.warning("LLM provider %s failed: %s", prov["name"], exc)
+                errors.append(f"{prov['name']}: {exc}")
+                if is_last:
+                    raise LLMProviderError("every LLM provider failed: " + "; ".join(errors)) from exc
+        # Unreachable: the last provider always either returns or raises above.
+        raise LLMProviderError("every LLM provider failed: " + "; ".join(errors))
+
+    @staticmethod
+    def _check_transient(status_code: int, body: str) -> None:
+        """A 429 (rate limit) or any 5xx is worth failing over for; raise `_Transient` for those."""
+        if status_code == 429 or status_code >= 500:
+            raise _Transient(f"HTTP {status_code}: {body[:200]}")
+
+    def _complete_gemini(self, prov: dict[str, str], system: str, user: str,
+                         temperature: float, max_tokens: int) -> str:
+        import requests
+
+        url = f"{_GEMINI_BASE_URL}/models/{prov['model']}:generateContent"
+        body: dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        try:
+            resp = requests.post(url, params={"key": prov["api_key"]}, json=body,
+                                 timeout=_HTTP_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            raise _Transient(f"request error: {exc}") from exc
+        self._check_transient(resp.status_code, resp.text)
+        if resp.status_code >= 400:
+            raise LLMProviderError(f"gemini HTTP {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        candidates = data.get("candidates") or []
+        if not candidates:
+            blocked = (data.get("promptFeedback") or {}).get("blockReason")
+            raise LLMProviderError("gemini returned no candidates"
+                                   + (f" (blocked: {blocked})" if blocked else ""))
+        parts = ((candidates[0].get("content") or {}).get("parts")) or []
+        text = "".join(p.get("text", "") for p in parts)
+        if not text.strip():
+            raise LLMProviderError("gemini returned an empty completion")
+        return text
+
+    def _complete_openai(self, prov: dict[str, str], system: str, user: str,
+                         temperature: float, max_tokens: int) -> str:
+        import requests
+
+        base = _OPENAI_BASE_URLS.get(prov["kind"], _OPENAI_BASE_URLS["groq"])
+        url = f"{base}/chat/completions"
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+        payload: dict[str, Any] = {
+            "model": prov["model"],
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {"Authorization": f"Bearer {prov['api_key']}"}
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
+            # Some models reject json_object unless the word "json" is in the prompt. The agents'
+            # prompts are JSON-oriented, but retry once without the hint if a provider objects.
+            if resp.status_code == 400 and "json" in resp.text.lower():
+                payload.pop("response_format", None)
+                resp = requests.post(url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
+        except requests.exceptions.RequestException as exc:
+            raise _Transient(f"request error: {exc}") from exc
+        self._check_transient(resp.status_code, resp.text)
+        if resp.status_code >= 400:
+            raise LLMProviderError(f"{prov['name']} HTTP {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMProviderError(f"{prov['name']} returned no choices")
+        text = ((choices[0].get("message") or {}).get("content")) or ""
+        if not text.strip():
+            raise LLMProviderError(f"{prov['name']} returned an empty completion")
+        return text
 
 
 def get_client(results_dir: Path | str = DEFAULT_RESULTS_DIR) -> LLMClient | None:
     """Build the configured client, or return None to mean "use the deterministic fallback".
 
-    Configuration is read lazily here, never at import. In the Phase 1 state - no `LLM_API_KEY` -
-    this returns None and the agents rank/report/recommend deterministically. Once a key is set it
-    returns a `RealClient`, whose first call raises `NotConfigured` until the real provider is
-    wired in. That deterministic path stays as the permanent fallback if the LLM is unreachable, so
-    a demo never blocks (constraint 8).
+    Configuration is read lazily here, never at import. With no `LLM_API_KEY` this returns None and
+    the agents rank/report/recommend deterministically. With a key it returns a `RealClient` wired
+    to the primary provider, plus an optional fallback provider when the `LLM_FALLBACK_*` trio is
+    set. The deterministic path stays as the permanent fallback if every provider is unreachable,
+    so a demo never blocks (constraint 8).
     """
     env_file = _load_env_file()
     api_key = _env("LLM_API_KEY", env_file)
     if not api_key:
         return None
-    provider = _env("LLM_PROVIDER", env_file)
-    model = _env("LLM_MODEL", env_file)
-    return RealClient(provider=provider, model=model, api_key=api_key, results_dir=results_dir)
+    return RealClient(
+        provider=_env("LLM_PROVIDER", env_file),
+        model=_env("LLM_MODEL", env_file),
+        api_key=api_key,
+        results_dir=results_dir,
+        fallback_provider=_env("LLM_FALLBACK_PROVIDER", env_file),
+        fallback_model=_env("LLM_FALLBACK_MODEL", env_file),
+        fallback_api_key=_env("LLM_FALLBACK_API_KEY", env_file),
+    )
 
 
 __all__ = [
@@ -300,6 +461,7 @@ __all__ = [
     "AgentLog",
     "LLMClient",
     "LLMOutputError",
+    "LLMProviderError",
     "NotConfigured",
     "RealClient",
     "StubClient",

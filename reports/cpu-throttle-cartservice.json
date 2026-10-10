@@ -1,0 +1,113 @@
+{
+  "experiment_id": "cpu-throttle-cartservice",
+  "generated_at": "2026-10-11T01:51:04.295710+05:30",
+  "source": "deterministic",
+  "verdict": "completed",
+  "action": "cpu_throttle",
+  "target": "online-boutique-cartservice-1",
+  "service": "cartservice",
+  "summary": "cpu_throttle on cartservice: verdict completed; no degradation observed",
+  "failure_origin": {
+    "component": null,
+    "at": null,
+    "is_injected_target": null,
+    "evidence_ids": [],
+    "note": "no degradation was observed in the evidence window"
+  },
+  "propagation": [],
+  "impact": {
+    "failed_endpoints": [],
+    "error_types": {},
+    "peak_error_rate_pct": 0.0,
+    "peak_p95_ms": 230.75,
+    "baseline_p95_ms": 156.63,
+    "evidence_ids": [
+      "E6",
+      "E3"
+    ]
+  },
+  "timings": {
+    "detection_seconds": null,
+    "recovery_seconds": 0.4,
+    "self_healed": false,
+    "evidence_ids": [
+      "E3"
+    ]
+  },
+  "what_worked": [
+    {
+      "statement": "these pages kept working throughout: Cart, Checkout, Home, Product",
+      "kind": "observed",
+      "evidence_ids": [
+        "E3"
+      ]
+    },
+    {
+      "statement": "the application tolerated the fault: no page probe failed while it was in place",
+      "kind": "observed",
+      "evidence_ids": [
+        "E3"
+      ]
+    }
+  ],
+  "anomalies": [],
+  "unknowns": [
+    "no container logs were captured, so the underlying error text is unknown"
+  ],
+  "evidence": [
+    {
+      "id": "E1",
+      "source": "graph",
+      "at": null,
+      "summary": "cartservice: criticality 61.7, called by ['checkoutservice', 'frontend']"
+    },
+    {
+      "id": "E2",
+      "source": "baseline",
+      "at": null,
+      "summary": "baseline p95 mean 156.63ms (error rate 0.0%)"
+    },
+    {
+      "id": "E3",
+      "source": "result",
+      "at": "2026-10-11T01:50:29.798527+05:30",
+      "summary": "verdict completed; detection Nones, recovery 0.4s"
+    },
+    {
+      "id": "E4",
+      "source": "timeline",
+      "at": "2026-10-11T01:50:29.798605+05:30",
+      "summary": "[injector] injected cpu_throttle: throttled online-boutique-cartservice-1 to 0.1 CPU(s)"
+    },
+    {
+      "id": "E5",
+      "source": "timeline",
+      "at": "2026-10-11T01:50:30.180470+05:30",
+      "summary": "[logs] captured logs for 3 container(s) at injection"
+    },
+    {
+      "id": "E6",
+      "source": "telemetry",
+      "at": "2026-10-11T01:50:30.937594+05:30",
+      "summary": "peak p95 latency 230.75ms"
+    },
+    {
+      "id": "E7",
+      "source": "timeline",
+      "at": "2026-10-11T01:51:00.721047+05:30",
+      "summary": "[runner] rolled back: online-boutique-cartservice-1: restored unlimited CPU"
+    },
+    {
+      "id": "E8",
+      "source": "timeline",
+      "at": "2026-10-11T01:51:01.154461+05:30",
+      "summary": "[logs] captured logs for 3 container(s) at rollback"
+    },
+    {
+      "id": "E9",
+      "source": "timeline",
+      "at": "2026-10-11T01:51:03.204934+05:30",
+      "summary": "[runner] application healthy again (recovery confirmed)"
+    }
+  ]
+}

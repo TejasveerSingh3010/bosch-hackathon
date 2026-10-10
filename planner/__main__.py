@@ -4,6 +4,8 @@
     python -m planner approve <rank>           show the plan, require a typed confirmation, run it
     python -m planner approve <rank> --dry-run  validate and explain, change nothing
     python -m planner approve <rank> --confirm <id>   supply the confirmation non-interactively
+    python -m planner approve <rank> --yes            auto-confirm and run (scripts\\attack.bat)
+    python -m planner menu                     list every attack, then pick a serial number to run
 
 Agent 1 never executes anything itself: `approve` prints `explain_plan`, requires you to type the
 experiment id back, and only then calls `ExperimentRunner.run`, which re-checks pre-flight against
@@ -92,7 +94,11 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
     # Human approval: the experiment id must be typed back, exactly. --confirm supplies it for
     # scripted demos; without it, we prompt interactively. No confirmation means nothing runs.
-    typed = args.confirm if args.confirm is not None else _prompt(experiment.id)
+    if getattr(args, "yes", False):
+        print(f"\nauto-confirming (--yes): running {experiment.id}")
+        typed = experiment.id
+    else:
+        typed = args.confirm if args.confirm is not None else _prompt(experiment.id)
     if typed != experiment.id:
         print(f"\nnot confirmed (you typed {typed!r}, expected {experiment.id!r}); nothing ran.")
         return EXIT_ERROR
@@ -145,6 +151,28 @@ def _prompt(experiment_id: str) -> str:
         return ""
 
 
+def cmd_menu(args: argparse.Namespace) -> int:
+    """List every attack, then read a serial number from the prompt and run that one."""
+    rc = cmd_rank(args)
+    if rc != EXIT_OK:
+        return rc
+    try:
+        choice = input("\nEnter the serial number to run (blank to cancel): ").strip()
+    except EOFError:
+        choice = ""
+    if not choice:
+        print("cancelled; nothing ran.")
+        return EXIT_OK
+    if not choice.isdigit():
+        print(f"not a serial number: {choice!r}; nothing ran.")
+        return EXIT_ERROR
+    run_args = argparse.Namespace(
+        target_file=args.target_file, results_dir=args.results_dir, rank=int(choice),
+        dry_run=False, confirm=None, yes=True, poll=getattr(args, "poll", 2.0),
+    )
+    return cmd_approve(run_args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m planner", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -160,8 +188,14 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--dry-run", action="store_true", help="validate and explain, change nothing")
     approve.add_argument("--confirm", default=None,
                          help="supply the typed confirmation (the experiment id) non-interactively")
+    approve.add_argument("--yes", "-y", action="store_true",
+                         help="auto-confirm and run without typing the id (used by scripts/attack.bat)")
     approve.add_argument("--poll", type=float, default=2.0, help="watchdog poll interval, seconds")
     approve.set_defaults(func=cmd_approve)
+
+    menu = sub.add_parser("menu", help="list every attack, then pick a serial number to run")
+    menu.add_argument("--poll", type=float, default=2.0, help="watchdog poll interval, seconds")
+    menu.set_defaults(func=cmd_menu)
     return parser
 
 

@@ -126,7 +126,7 @@ def test_write_ranking_roundtrips(docker, config, write_telemetry, graph_file, r
 # -------------------------------------------------- approve: human-in-the-loop gating
 def _approve_args(results_dir: Path, rank: int, **kw) -> Namespace:
     base = {"target_file": None, "results_dir": results_dir, "rank": rank,
-            "dry_run": False, "confirm": None, "poll": 2.0}
+            "dry_run": False, "confirm": None, "poll": 2.0, "yes": False}
     base.update(kw)
     return Namespace(**base)
 
@@ -162,4 +162,44 @@ def test_approve_cannot_force_through_a_refused_plan(ranked, docker, config, wri
         (results_dir / "ranking.json").read_text(encoding="utf-8")).attacks[0]
     code = ranked.cmd_approve(_approve_args(results_dir, 1, confirm=entry.experiment.id))
     assert code == 2  # EXIT_REJECTED
+    assert not any(m in {"kill", "stop", "pause"} for m, _ in docker.calls)
+
+
+def test_approve_yes_runs_the_attack_without_a_prompt(ranked, docker, results_dir, monkeypatch):
+    # --yes must auto-confirm and never fall back to input(): make input() fail if it is called.
+    def _boom(*_a, **_k):
+        raise AssertionError("approve --yes must not prompt")
+    monkeypatch.setattr("builtins.input", _boom)
+    code = ranked.cmd_approve(_approve_args(results_dir, 1, yes=True))
+    assert code in (0, 3)  # a real run: completed, or aborted by the watchdog
+    assert docker.calls  # an injection actually happened
+    eid = json.loads((results_dir / "ranking.json").read_text(encoding="utf-8"))["attacks"][0]["experiment"]["id"]
+    assert (results_dir / f"{eid}.json").exists()
+
+
+
+def _menu_args(results_dir: Path):
+    return Namespace(target_file=None, results_dir=results_dir, poll=2.0)
+
+
+def test_menu_runs_the_attack_for_the_typed_serial(ranked, docker, results_dir, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "1")
+    code = ranked.cmd_menu(_menu_args(results_dir))
+    assert code in (0, 3)  # a real run
+    assert docker.calls  # the picked attack was injected
+    eid = json.loads((results_dir / "ranking.json").read_text(encoding="utf-8"))["attacks"][0]["experiment"]["id"]
+    assert (results_dir / f"{eid}.json").exists()
+
+
+def test_menu_blank_choice_runs_nothing(ranked, docker, results_dir, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "")
+    code = ranked.cmd_menu(_menu_args(results_dir))
+    assert code == 0
+    assert not any(m in {"kill", "stop", "pause"} for m, _ in docker.calls)
+
+
+def test_menu_non_numeric_choice_runs_nothing(ranked, docker, results_dir, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "redis")
+    code = ranked.cmd_menu(_menu_args(results_dir))
+    assert code == 1
     assert not any(m in {"kill", "stop", "pause"} for m, _ in docker.calls)

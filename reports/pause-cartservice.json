@@ -1,0 +1,212 @@
+{
+  "experiment_id": "pause-cartservice",
+  "generated_at": "2026-10-11T02:04:22.570265+05:30",
+  "source": "deterministic",
+  "verdict": "aborted",
+  "action": "pause",
+  "target": "online-boutique-cartservice-1",
+  "service": "cartservice",
+  "summary": "pause on cartservice: verdict aborted; first degradation: cartservice [E8]; pages failed: Cart, Home, Product",
+  "failure_origin": {
+    "component": "cartservice",
+    "at": "2026-10-11T02:04:11.370135+05:30",
+    "is_injected_target": true,
+    "evidence_ids": [
+      "E8"
+    ],
+    "note": "the injected target degraded first"
+  },
+  "propagation": [
+    {
+      "component": "cartservice",
+      "role": "target",
+      "degraded_at": "2026-10-11T02:04:11.370135+05:30",
+      "evidence_ids": [
+        "E9"
+      ]
+    },
+    {
+      "component": "Home",
+      "role": "page",
+      "degraded_at": "2026-10-11T02:04:11.370135+05:30",
+      "evidence_ids": [
+        "E10"
+      ]
+    },
+    {
+      "component": "Cart",
+      "role": "page",
+      "degraded_at": "2026-10-11T02:04:11.370135+05:30",
+      "evidence_ids": [
+        "E11"
+      ]
+    },
+    {
+      "component": "Product",
+      "role": "page",
+      "degraded_at": "2026-10-11T02:04:11.370135+05:30",
+      "evidence_ids": [
+        "E12"
+      ]
+    }
+  ],
+  "impact": {
+    "failed_endpoints": [
+      "Cart",
+      "Home",
+      "Product"
+    ],
+    "error_types": {
+      "timeout": 6
+    },
+    "peak_error_rate_pct": 75.0,
+    "peak_p95_ms": 3043.28,
+    "baseline_p95_ms": 156.63,
+    "evidence_ids": [
+      "E13",
+      "E16",
+      "E5"
+    ]
+  },
+  "timings": {
+    "detection_seconds": null,
+    "recovery_seconds": 3.8,
+    "self_healed": false,
+    "evidence_ids": [
+      "E5"
+    ]
+  },
+  "what_worked": [
+    {
+      "statement": "these pages kept working throughout: Checkout",
+      "kind": "observed",
+      "evidence_ids": [
+        "E5"
+      ]
+    }
+  ],
+  "anomalies": [],
+  "unknowns": [],
+  "evidence": [
+    {
+      "id": "E1",
+      "source": "graph",
+      "at": null,
+      "summary": "cartservice: criticality 61.7, called by ['checkoutservice', 'frontend']"
+    },
+    {
+      "id": "E2",
+      "source": "baseline",
+      "at": null,
+      "summary": "baseline p95 mean 156.63ms (error rate 0.0%)"
+    },
+    {
+      "id": "E3",
+      "source": "logs",
+      "at": null,
+      "summary": "online-boutique-frontend-1: error x13 - {\"error\":\"could not retrieve cart: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"428cbd59-4882-4fbb-b911-b8bf0e7b69b6\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/0PUK6V6EV0\",\"message\":\"request error\",\"session\":\"4df1d62e-c2ff-4f51-92af-4fadb48f5af0\",\"severity\":\"error\",\"tim"
+    },
+    {
+      "id": "E4",
+      "source": "docker_event",
+      "at": "2026-10-11T02:04:08+05:30",
+      "summary": "docker pause online-boutique-cartservice-1"
+    },
+    {
+      "id": "E5",
+      "source": "result",
+      "at": "2026-10-11T02:04:08.287884+05:30",
+      "summary": "verdict aborted; detection Nones, recovery 3.8s; abort: error rate 75.0% exceeded the limit 20.0% for 2 consecutive samples"
+    },
+    {
+      "id": "E6",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:08.287990+05:30",
+      "summary": "[injector] injected pause: paused online-boutique-cartservice-1"
+    },
+    {
+      "id": "E7",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:08.674724+05:30",
+      "summary": "[logs] captured logs for 3 container(s) at injection"
+    },
+    {
+      "id": "E8",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:11.370135+05:30",
+      "summary": "first degradation: service cartservice degraded"
+    },
+    {
+      "id": "E9",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:11.370135+05:30",
+      "summary": "service cartservice first degraded"
+    },
+    {
+      "id": "E10",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:11.370135+05:30",
+      "summary": "page Home first degraded"
+    },
+    {
+      "id": "E11",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:11.370135+05:30",
+      "summary": "page Cart first degraded"
+    },
+    {
+      "id": "E12",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:11.370135+05:30",
+      "summary": "page Product first degraded"
+    },
+    {
+      "id": "E13",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:11.370135+05:30",
+      "summary": "peak error rate 75.0%"
+    },
+    {
+      "id": "E14",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:12.738153+05:30",
+      "summary": "[watchdog] first degraded sample observed"
+    },
+    {
+      "id": "E15",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:14.758635+05:30",
+      "summary": "[watchdog] abort: error rate 75.0% exceeded the limit 20.0% for 2 consecutive samples"
+    },
+    {
+      "id": "E16",
+      "source": "telemetry",
+      "at": "2026-10-11T02:04:15.140528+05:30",
+      "summary": "peak p95 latency 3043.28ms"
+    },
+    {
+      "id": "E17",
+      "source": "docker_event",
+      "at": "2026-10-11T02:04:16+05:30",
+      "summary": "docker unpause online-boutique-cartservice-1"
+    },
+    {
+      "id": "E18",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:16.196925+05:30",
+      "summary": "[runner] rolled back: unpaused online-boutique-cartservice-1"
+    },
+    {
+      "id": "E19",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:16.749781+05:30",
+      "summary": "[logs] captured logs for 3 container(s) at rollback"
+    },
+    {
+      "id": "E20",
+      "source": "timeline",
+      "at": "2026-10-11T02:04:20.855799+05:30",
+      "summary": "[runner] application healthy again (recovery confirmed)"
+    }
+  ]
+}

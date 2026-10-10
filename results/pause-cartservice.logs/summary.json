@@ -1,0 +1,59 @@
+{
+  "online-boutique-cartservice-1": {
+    "container": "online-boutique-cartservice-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [],
+    "tail": [
+      "GetCartAsync called with userId=31405be7-a8a0-43cc-9764-c5a20a941645",
+      "EmptyCartAsync called with userId=31405be7-a8a0-43cc-9764-c5a20a941645",
+      "GetCartAsync called with userId=4b74e9ad-1e42-41d4-8396-f291a877a741",
+      "GetCartAsync called with userId=f98a79a8-0803-4c36-a546-6967c3a6cafe",
+      "GetCartAsync called with userId=a8758c4a-93e6-4cc7-81c7-bdf41dec9462"
+    ],
+    "note": ""
+  },
+  "online-boutique-checkoutservice-1": {
+    "container": "online-boutique-checkoutservice-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [],
+    "tail": [
+      "{\"message\":\"payment went through (transaction_id: 7286d07f-60f3-41d4-bbc4-69ec49ea1207)\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:34:01.678831483Z\"}",
+      "{\"message\":\"order confirmation email sent to \\\"monitor@example.com\\\"\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:34:01.683002041Z\"}",
+      "{\"message\":\"[PlaceOrder] user_id=\\\"31405be7-a8a0-43cc-9764-c5a20a941645\\\" user_currency=\\\"USD\\\"\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:34:06.898785435Z\"}",
+      "{\"message\":\"payment went through (transaction_id: 6bfda3da-ecd3-41ba-9aaa-7c2a397a1fae)\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:34:06.905576252Z\"}",
+      "{\"message\":\"order confirmation email sent to \\\"monitor@example.com\\\"\",\"severity\":\"info\",\"timestamp\":\"2026-10-10T20:34:06.909269126Z\"}"
+    ],
+    "note": ""
+  },
+  "online-boutique-frontend-1": {
+    "container": "online-boutique-frontend-1",
+    "phases": [
+      "injection",
+      "rollback"
+    ],
+    "total_lines": 400,
+    "errors": [
+      {
+        "kind": "error",
+        "first_line": "{\"error\":\"could not retrieve cart: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"428cbd59-4882-4fbb-b911-b8bf0e7b69b6\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/0PUK6V6EV0\",\"message\":\"request error\",\"session\":\"4df1d62e-c2ff-4f51-92af-4fadb48f5af0\",\"severity\":\"error\",\"tim",
+        "count": 13
+      }
+    ],
+    "tail": [
+      "{\"http.req.id\":\"a65aa98f-6200-4ca9-9aa7-940a16e34e50\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"http.resp.bytes\":10562,\"http.resp.status\":200,\"http.resp.took_ms\":7147,\"message\":\"request complete\",\"session\":\"efea2c5e-fc5b-4766-80ee-8a0622a65b41\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:34:16.528679156Z\"}",
+      "{\"http.req.id\":\"a2f58503-7dc7-447e-b564-6e5d92723cb0\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"message\":\"ENV_PLATFORM is: local\",\"session\":\"5d494ea7-7378-4fe1-99b5-570ac2aefb6f\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:34:16.534256805Z\"}",
+      "{\"http.req.id\":\"a2f58503-7dc7-447e-b564-6e5d92723cb0\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"http.resp.bytes\":10482,\"http.resp.status\":200,\"http.resp.took_ms\":7356,\"message\":\"request complete\",\"session\":\"5d494ea7-7378-4fe1-99b5-570ac2aefb6f\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:34:16.536469692Z\"}",
+      "{\"http.req.id\":\"b3a99874-e3c4-418e-8a0a-a08809b85277\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"message\":\"ENV_PLATFORM is: local\",\"session\":\"fe2a0601-356e-496c-9288-65afa08c5d2a\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:34:16.697128842Z\"}",
+      "{\"http.req.id\":\"b3a99874-e3c4-418e-8a0a-a08809b85277\",\"http.req.method\":\"GET\",\"http.req.path\":\"/\",\"http.resp.bytes\":10501,\"http.resp.status\":200,\"http.resp.took_ms\":5378,\"message\":\"request complete\",\"session\":\"fe2a0601-356e-496c-9288-65afa08c5d2a\",\"severity\":\"debug\",\"timestamp\":\"2026-10-10T20:34:16.700192083Z\"}"
+    ],
+    "note": ""
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "praise": [
+    {
+      "service": "cartservice",
+      "statement": "Cartservice tolerated 0.1 CPU throttling without failing any page probes (Cart, Checkout, Home, Product) and maintained 0.0% error

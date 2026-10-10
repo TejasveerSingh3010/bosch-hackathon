@@ -23,6 +23,22 @@ from tests.fake_docker import FakeDocker, allowed_container_names  # noqa: E402
 PROJECT = "online-boutique"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_llm_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep tests independent of any real .env, so a developer's LLM key never changes outcomes.
+
+    Points the lazy .env reader at a path that does not exist and clears the LLM_* process vars, so
+    the offline (no-key) path is the default in every test. The few tests that exercise env / .env
+    reading set ENV_FILE or those vars themselves afterwards, which stacks on top of this.
+    """
+    import agents.llm as llm
+
+    monkeypatch.setattr(llm, "ENV_FILE", tmp_path / "no-such.env")
+    for var in ("LLM_API_KEY", "LLM_PROVIDER", "LLM_MODEL",
+                "LLM_FALLBACK_API_KEY", "LLM_FALLBACK_PROVIDER", "LLM_FALLBACK_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def make_sample(
     error_rate_pct: float = 0.0,
     p95_ms: float = 40.0,

@@ -1,56 +1,68 @@
 {
-  "captured_at": "2026-10-10T08:07:22.937000+00:00",
-  "source": "telemetry.json",
+  "captured_at": "2026-10-11T01:30:10.595713+05:30",
+  "source": "telemetry_log.jsonl",
   "window": {
-    "start": "2026-10-10T13:35:23.460966+05:30",
-    "end": "2026-10-10T13:37:21.519742+05:30",
-    "seconds": 118,
-    "samples": 60
+    "start": "2026-10-11T01:24:39.545102+05:30",
+    "end": "2026-10-11T01:30:08.747245+05:30",
+    "seconds": 329,
+    "samples": 165
   },
   "overall": {
     "error_rate_pct": 0.0,
     "sample_p95_ms": {
-      "mean": 33.76,
-      "p95": 52.03,
-      "p99": 57.85,
-      "max": 57.85
+      "mean": 156.63,
+      "p95": 177.21,
+      "p99": 218.91,
+      "max": 218.91
     }
   },
   "endpoints": {
     "Home": {
-      "n": 60,
-      "mean_ms": 32.79,
-      "std_ms": 8.66,
-      "p50_ms": 28.26,
-      "p95_ms": 52.03,
-      "p99_ms": 57.85,
-      "max_ms": 57.85,
-      "ucl_ms": 58.76,
-      "requests": 60,
+      "n": 165,
+      "mean_ms": 41.7,
+      "std_ms": 11.84,
+      "p50_ms": 38.72,
+      "p95_ms": 60.6,
+      "p99_ms": 69.17,
+      "max_ms": 129.84,
+      "ucl_ms": 77.21,
+      "requests": 165,
       "error_rate_pct": 0.0
     },
     "Cart": {
-      "n": 60,
-      "mean_ms": 22.32,
-      "std_ms": 5.56,
-      "p50_ms": 20.3,
-      "p95_ms": 35.38,
-      "p99_ms": 41.41,
-      "max_ms": 41.41,
-      "ucl_ms": 39.0,
-      "requests": 60,
+      "n": 165,
+      "mean_ms": 28.84,
+      "std_ms": 9.48,
+      "p50_ms": 26.34,
+      "p95_ms": 44.43,
+      "p99_ms": 54.06,
+      "max_ms": 114.15,
+      "ucl_ms": 57.27,
+      "requests": 165,
       "error_rate_pct": 0.0
     },
     "Product": {
-      "n": 60,
-      "mean_ms": 22.41,
-      "std_ms": 4.75,
-      "p50_ms": 20.92,
-      "p95_ms": 33.65,
-      "p99_ms": 35.81,
-      "max_ms": 35.81,
-      "ucl_ms": 36.65,
-      "requests": 60,
+      "n": 165,
+      "mean_ms": 30.69,
+      "std_ms": 9.2,
+      "p50_ms": 28.37,
+      "p95_ms": 45.87,
+      "p99_ms": 56.54,
+      "max_ms": 108.82,
+      "ucl_ms": 58.27,
+      "requests": 165,
+      "error_rate_pct": 0.0
+    },
+    "Checkout": {
+      "n": 13,
+      "mean_ms": 149.54,
+      "std_ms": 9.49,
+      "p50_ms": 146.72,
+      "p95_ms": 168.36,
+      "p99_ms": 168.36,
+      "max_ms": 168.36,
+      "ucl_ms": 178.02,
+      "requests": 13,
       "error_rate_pct": 0.0
     }
   },
@@ -58,11 +70,80 @@
     "containers": 12,
     "all_ready_ratio": 1.0,
     "restarts_in_window": 0,
-    "resources": {}
+    "resources": {
+      "online-boutique-adservice-1": {
+        "cpu_pct_avg": 0.82,
+        "cpu_pct_max": 1.59,
+        "mem_mb_avg": 190.5,
+        "mem_mb_max": 191.1
+      },
+      "online-boutique-cartservice-1": {
+        "cpu_pct_avg": 2.13,
+        "cpu_pct_max": 4.23,
+        "mem_mb_avg": 58.0,
+        "mem_mb_max": 59.91
+      },
+      "online-boutique-checkoutservice-1": {
+        "cpu_pct_avg": 0.67,
+        "cpu_pct_max": 2.58,
+        "mem_mb_avg": 10.7,
+        "mem_mb_max": 11.67
+      },
+      "online-boutique-currencyservice-1": {
+        "cpu_pct_avg": 3.05,
+        "cpu_pct_max": 6.17,
+        "mem_mb_avg": 41.3,
+        "mem_mb_max": 42.87
+      },
+      "online-boutique-emailservice-1": {
+        "cpu_pct_avg": 0.84,
+        "cpu_pct_max": 1.5,
+        "mem_mb_avg": 36.9,
+        "mem_mb_max": 38.12
+      },
+      "online-boutique-frontend-1": {
+        "cpu_pct_avg": 6.95,
+        "cpu_pct_max": 14.71,
+        "mem_mb_avg": 16.2,
+        "mem_mb_max": 17.14
+      },
+      "online-boutique-loadgenerator-1": {
+        "cpu_pct_avg": 0.7,
+        "cpu_pct_max": 1.82,
+        "mem_mb_avg": 50.1,
+        "mem_mb_max": 50.82
+      },
+      "online-boutique-paymentservice-1": {
+        "cpu_pct_avg": 0.41,
+        "cpu_pct_max": 2.18,
+        "mem_mb_avg": 36.5,
+        "mem_mb_max": 37.43
+      },
+      "online-boutique-productcatalogservice-1": {
+        "cpu_pct_avg": 2.75,
+        "cpu_pct_max": 4.68,
+        "mem_mb_avg": 12.6,
+        "mem_mb_max": 13.6
+      },
+      "online-boutique-recommendationservice-1": {
+        "cpu_pct_avg": 2.58,
+        "cpu_pct_max": 4.07,
+        "mem_mb_avg": 33.9,
+        "mem_mb_max": 34.73
+      },
+      "online-boutique-redis-cart-1": {
+        "cpu_pct_avg": 0.46,
+        "cpu_pct_max": 0.68,
+        "mem_mb_avg": 6.9,
+        "mem_mb_max": 7.52
+      },
+      "online-boutique-shippingservice-1": {
+        "cpu_pct_avg": 0.61,
+        "cpu_pct_max": 1.38,
+        "mem_mb_avg": 9.9,
+        "mem_mb_max": 11.05
+      }
+    }
   },
-  "quality_warnings": [
-    "window is only 118s; capture at least 2-5 minutes for a stable baseline",
-    "no CPU/memory data in this history (monitor was started before resource sampling existed)",
-    "no checkout probe data; checkout-path services (payment, shipping, email) are not covered"
-  ]
+  "quality_warnings": []
 }

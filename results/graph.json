@@ -1,0 +1,443 @@
+{
+  "generated_from": "docker-compose.yml (*_ADDR environment variables and depends_on)",
+  "project": "online-boutique",
+  "services": [
+    "adservice",
+    "cartservice",
+    "checkoutservice",
+    "currencyservice",
+    "emailservice",
+    "frontend",
+    "loadgenerator",
+    "paymentservice",
+    "productcatalogservice",
+    "recommendationservice",
+    "redis-cart",
+    "shippingservice"
+  ],
+  "edges": [
+    {
+      "from": "cartservice",
+      "to": "redis-cart",
+      "type": "tcp",
+      "port": 6379,
+      "evidence": "env"
+    },
+    {
+      "from": "checkoutservice",
+      "to": "cartservice",
+      "type": "grpc",
+      "port": 7070,
+      "evidence": "env"
+    },
+    {
+      "from": "checkoutservice",
+      "to": "currencyservice",
+      "type": "grpc",
+      "port": 7000,
+      "evidence": "env"
+    },
+    {
+      "from": "checkoutservice",
+      "to": "emailservice",
+      "type": "grpc",
+      "port": 8080,
+      "evidence": "env"
+    },
+    {
+      "from": "checkoutservice",
+      "to": "paymentservice",
+      "type": "grpc",
+      "port": 50051,
+      "evidence": "env"
+    },
+    {
+      "from": "checkoutservice",
+      "to": "productcatalogservice",
+      "type": "grpc",
+      "port": 3550,
+      "evidence": "env"
+    },
+    {
+      "from": "checkoutservice",
+      "to": "shippingservice",
+      "type": "grpc",
+      "port": 50051,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "adservice",
+      "type": "grpc",
+      "port": 9555,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "cartservice",
+      "type": "grpc",
+      "port": 7070,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "checkoutservice",
+      "type": "grpc",
+      "port": 5050,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "currencyservice",
+      "type": "grpc",
+      "port": 7000,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "productcatalogservice",
+      "type": "grpc",
+      "port": 3550,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "recommendationservice",
+      "type": "grpc",
+      "port": 8080,
+      "evidence": "env"
+    },
+    {
+      "from": "frontend",
+      "to": "shippingservice",
+      "type": "grpc",
+      "port": 50051,
+      "evidence": "env"
+    },
+    {
+      "from": "loadgenerator",
+      "to": "frontend",
+      "type": "grpc",
+      "port": 8080,
+      "evidence": "env"
+    },
+    {
+      "from": "recommendationservice",
+      "to": "productcatalogservice",
+      "type": "grpc",
+      "port": 3550,
+      "evidence": "env"
+    }
+  ],
+  "analysis": {
+    "adservice": {
+      "name": "adservice",
+      "score": 13.3,
+      "rationale": "1 service(s) depend on it",
+      "dependents": [
+        "frontend"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "frontend"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": false,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": false,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "cartservice": {
+      "name": "cartservice",
+      "score": 61.7,
+      "rationale": "2 service(s) depend on it; on the checkout path; single point of failure",
+      "dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [
+        "redis-cart"
+      ],
+      "direct_dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "direct_dependencies": [
+        "redis-cart"
+      ],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": true,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "checkoutservice": {
+      "name": "checkoutservice",
+      "score": 48.3,
+      "rationale": "1 service(s) depend on it; on the checkout path; single point of failure",
+      "dependents": [
+        "frontend"
+      ],
+      "dependencies": [
+        "cartservice",
+        "currencyservice",
+        "emailservice",
+        "paymentservice",
+        "productcatalogservice",
+        "redis-cart",
+        "shippingservice"
+      ],
+      "direct_dependents": [
+        "frontend"
+      ],
+      "direct_dependencies": [
+        "cartservice",
+        "currencyservice",
+        "emailservice",
+        "paymentservice",
+        "productcatalogservice",
+        "shippingservice"
+      ],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": true,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "currencyservice": {
+      "name": "currencyservice",
+      "score": 51.7,
+      "rationale": "2 service(s) depend on it; on the checkout path",
+      "dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": false,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "emailservice": {
+      "name": "emailservice",
+      "score": 51.7,
+      "rationale": "2 service(s) depend on it; on the checkout path",
+      "dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "checkoutservice"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": false,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "frontend": {
+      "name": "frontend",
+      "score": 25.0,
+      "rationale": "user-facing entry point; single point of failure",
+      "dependents": [],
+      "dependencies": [
+        "adservice",
+        "cartservice",
+        "checkoutservice",
+        "currencyservice",
+        "emailservice",
+        "paymentservice",
+        "productcatalogservice",
+        "recommendationservice",
+        "redis-cart",
+        "shippingservice"
+      ],
+      "direct_dependents": [],
+      "direct_dependencies": [
+        "adservice",
+        "cartservice",
+        "checkoutservice",
+        "currencyservice",
+        "productcatalogservice",
+        "recommendationservice",
+        "shippingservice"
+      ],
+      "on_checkout_path": false,
+      "user_facing": true,
+      "stateful": false,
+      "single_point_of_failure": true,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "loadgenerator": {
+      "name": "loadgenerator",
+      "score": 0.0,
+      "rationale": "",
+      "dependents": [],
+      "dependencies": [
+        "adservice",
+        "cartservice",
+        "checkoutservice",
+        "currencyservice",
+        "emailservice",
+        "frontend",
+        "paymentservice",
+        "productcatalogservice",
+        "recommendationservice",
+        "redis-cart",
+        "shippingservice"
+      ],
+      "direct_dependents": [],
+      "direct_dependencies": [
+        "frontend"
+      ],
+      "on_checkout_path": false,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": false,
+      "infrastructure": true,
+      "restart_policy": "unless-stopped"
+    },
+    "paymentservice": {
+      "name": "paymentservice",
+      "score": 51.7,
+      "rationale": "2 service(s) depend on it; on the checkout path",
+      "dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "checkoutservice"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": false,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "productcatalogservice": {
+      "name": "productcatalogservice",
+      "score": 75.0,
+      "rationale": "3 service(s) depend on it; on the checkout path; single point of failure",
+      "dependents": [
+        "checkoutservice",
+        "frontend",
+        "recommendationservice"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "checkoutservice",
+        "frontend",
+        "recommendationservice"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": true,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "recommendationservice": {
+      "name": "recommendationservice",
+      "score": 23.3,
+      "rationale": "1 service(s) depend on it; single point of failure",
+      "dependents": [
+        "frontend"
+      ],
+      "dependencies": [
+        "productcatalogservice"
+      ],
+      "direct_dependents": [
+        "frontend"
+      ],
+      "direct_dependencies": [
+        "productcatalogservice"
+      ],
+      "on_checkout_path": false,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": true,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "redis-cart": {
+      "name": "redis-cart",
+      "score": 85.0,
+      "rationale": "3 service(s) depend on it; on the checkout path; single point of failure; holds state",
+      "dependents": [
+        "cartservice",
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "cartservice"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": true,
+      "single_point_of_failure": true,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    },
+    "shippingservice": {
+      "name": "shippingservice",
+      "score": 51.7,
+      "rationale": "2 service(s) depend on it; on the checkout path",
+      "dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "direct_dependents": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "direct_dependencies": [],
+      "on_checkout_path": true,
+      "user_facing": false,
+      "stateful": false,
+      "single_point_of_failure": false,
+      "infrastructure": false,
+      "restart_policy": "unless-stopped"
+    }
+  },
+  "ranked_targets": [
+    "redis-cart",
+    "productcatalogservice",
+    "cartservice",
+    "currencyservice",
+    "emailservice",
+    "paymentservice",
+    "shippingservice",
+    "checkoutservice",
+    "frontend",
+    "recommendationservice",
+    "adservice"
+  ],
+  "cross_check": [
+    "all 16 call edges match the documented architecture"
+  ],
+  "warnings": [
+    "frontend is configured to call 'shoppingassistantservice' (via SHOPPING_ASSISTANT_SERVICE_ADDR), but no such service exists in this compose file - the dependency is unsatisfiable and is left out of the graph"
+  ]
+}
