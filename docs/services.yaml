@@ -1,0 +1,303 @@
+# Per-service documentation for Online Boutique, read from the upstream source.
+#
+# Source: github.com/GoogleCloudPlatform/microservices-demo, tag v0.10.7 (commit 5b608cb1df),
+# the same tag as the images in app/docker-compose.yml. Every fact below cites the file it came from.
+#
+# Three consumers:
+#   * remediation/agent.py gives digests of these sheets to the agent as context.
+#   * remediation/policy.py enforces `tunable_env`: an environment change is accepted only if the
+#     key is listed for that service (and the value matches `pattern`, when one is given).
+#     Every other variable the service reads is in `env_reads` for context only.
+#   * code recommendations (`propose-code`) use a service's `code:` map: its source directory
+#     (`dir`), the functions that handle each RPC it serves (`serves`), the functions that call each
+#     dependency (`calls`) and, for the frontend, the handler behind each probed page (`pages`).
+#     Function names resolve in the pinned source (tests/test_code_remediation.py checks every one).
+#     Only services with a `code:` map can be edited, and only inside `code.dir`: every service but
+#     redis-cart (stock Redis image, no source) and loadgenerator (protected).
+#
+# Compose in this repo sets no cpus / mem_limit, so every container is currently unbounded. The
+# `upstream_resources` are what the upstream Kubernetes manifests request and cap - a sane range for
+# proposals, but adding a limit constrains a container; it does not give it more than it has today.
+
+source:
+  repo: GoogleCloudPlatform/microservices-demo
+  tag: v0.10.7
+  commit: 5b608cb1dfe317d05e4f1bb8c99b7618452fde87
+
+services:
+  frontend:
+    language: Go
+    role: HTTP front end; every page is rendered by calling the backend services over gRPC.
+    env_reads: [PORT, LISTEN_ADDR, BASE_URL, ENV_PLATFORM, CYMBAL_BRANDING, FRONTEND_MESSAGE, BANNER_COLOR,
+                ENABLE_ASSISTANT, ENABLE_SINGLE_SHARED_SESSION, ENABLE_PROFILER, ENABLE_TRACING,
+                COLLECTOR_SERVICE_ADDR, PACKAGING_SERVICE_URL, AD_SERVICE_ADDR, CART_SERVICE_ADDR,
+                CHECKOUT_SERVICE_ADDR, CURRENCY_SERVICE_ADDR, PRODUCT_CATALOG_SERVICE_ADDR,
+                RECOMMENDATION_SERVICE_ADDR, SHIPPING_SERVICE_ADDR, SHOPPING_ASSISTANT_SERVICE_ADDR]
+    tunable_env:
+      ENABLE_PROFILER:
+        pattern: "^[01]$"
+        effect: Stackdriver profiler on/off. Observability overhead only; no effect on how failures are handled.
+    not_tunable:
+      ENABLE_SINGLE_SHARED_SESSION: changes session semantics (all users share one cart) - breaks the cart consistency check.
+      ENABLE_TRACING: needs COLLECTOR_SERVICE_ADDR; there is no collector here, so the service would panic at start.
+    calls:  # handlers.go - "fatal" means the handler returns HTTP 500 when the call fails
+      "GET / (Home)":            {fatal: [currencyservice, productcatalogservice, cartservice], tolerated: [adservice]}
+      "GET /product/{id}":       {fatal: [productcatalogservice, currencyservice, cartservice], tolerated: [recommendationservice, adservice]}
+      "GET /cart":               {fatal: [currencyservice, cartservice, shippingservice, productcatalogservice], tolerated: [recommendationservice]}
+      "POST /cart (add)":        {fatal: [productcatalogservice, cartservice]}
+      "POST /cart/checkout":     {fatal: [checkoutservice, currencyservice], tolerated: [recommendationservice]}
+    deadlines: >
+      No per-call deadline on any backend call except ads (100 ms, rpc.go:120). mustConnGRPC (main.go:225)
+      creates a 3 s context and discards it (`_, cancel := context.WithTimeout(...)`), so it bounds nothing.
+      A dependency that hangs (paused, overloaded) therefore hangs every page that calls it until the
+      client gives up; a dependency that is down returns an error and the page fails with HTTP 500.
+    retries: none on backend calls.
+    fallbacks: only ads and recommendations - a failure there is logged and the page still renders.
+    health: HTTP GET /_healthz always returns "ok" (main.go:161); it does not check dependencies.
+    fixable_by_config: >
+      No. Making Home/Product/Cart survive a cart, catalog or currency outage, or fail fast when one
+      hangs, needs code: per-call deadlines on the gRPC calls in rpc.go, and treating the cart (and
+      currency conversion) as optional on Home/Product in handlers.go.
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:  # where a code recommendation looks; paths are inside `dir` of the pinned source
+      dir: src/frontend
+      calls:  # backend service -> the functions that call it (rpc.go wraps every gRPC call but checkout)
+        cartservice: {file: rpc.go, functions: [getCart, emptyCart, insertCart]}
+        productcatalogservice: {file: rpc.go, functions: [getProducts, getProduct]}
+        currencyservice: {file: rpc.go, functions: [getCurrencies, convertCurrency]}
+        shippingservice: {file: rpc.go, functions: [getShippingQuote]}
+        recommendationservice: {file: rpc.go, functions: [getRecommendations]}
+        adservice: {file: rpc.go, functions: [getAd]}
+        checkoutservice: {file: handlers.go, functions: [placeOrderHandler]}  # handlers.go:354
+      pages:  # monitor probe name -> the handler that renders it
+        Home: {file: handlers.go, functions: [homeHandler]}
+        Product: {file: handlers.go, functions: [productHandler]}
+        Cart: {file: handlers.go, functions: [viewCartHandler]}
+        Checkout: {file: handlers.go, functions: [placeOrderHandler]}
+
+  cartservice:
+    language: C# (.NET, ASP.NET Core gRPC)
+    role: Stores carts in Redis (redis-cart) through IDistributedCache / StackExchange.Redis.
+    env_reads: [REDIS_ADDR, SPANNER_PROJECT, SPANNER_CONNECTION_STRING, ALLOYDB_PRIMARY_IP, ASPNETCORE_HTTP_PORTS]
+    tunable_env:
+      REDIS_ADDR:
+        pattern: "^redis-cart:6379(,(connectTimeout|asyncTimeout|syncTimeout|connectRetry|keepAlive)=[0-9]+|,abortConnect=(true|false))+$"
+        effect: >
+          Passed verbatim as the StackExchange.Redis configuration string (Startup.cs:36-39), so client
+          options may be appended after the address, e.g. "redis-cart:6379,connectTimeout=1000,asyncTimeout=1000,abortConnect=false".
+          Cart reads and writes are async (RedisCartStore.cs: GetAsync/SetAsync), so asyncTimeout bounds
+          how long a cart call waits on a hung or unreachable Redis before failing; connectTimeout and
+          abortConnect=false govern reconnecting after Redis restarts. The address itself must stay
+          redis-cart:6379. Whether a shorter timeout improves anything the probes see is a hypothesis to measure.
+    not_tunable:
+      DISABLE_PROFILER: not read by cartservice at all - setting it has no effect.
+      ASPNETCORE_HTTP_PORTS: the listening port (7070, set in the image's Dockerfile); changing it breaks callers.
+    calls: {redis-cart: "every cart read and write"}
+    failure_behaviour: >
+      Any Redis error is caught and rethrown as gRPC FAILED_PRECONDITION "Can't access cart storage"
+      (RedisCartStore.cs:62-102), so callers get an error rather than an empty cart. Because the
+      frontend treats the cart as fatal on Home, Product and Cart, a cart failure takes those pages down.
+    health: gRPC health check pings Redis (HealthCheckService.cs) - reports NOT_SERVING while Redis is down.
+    upstream_resources: {requests: {cpu: 200m, memory: 64Mi}, limits: {cpu: 300m, memory: 128Mi}}
+    code:  # C#; function = method name
+      dir: src/cartservice/src
+      serves:
+        GetCart: {file: services/CartService.cs, functions: [GetCart]}
+        AddItem: {file: services/CartService.cs, functions: [AddItem]}
+        EmptyCart: {file: services/CartService.cs, functions: [EmptyCart]}
+      calls:
+        redis-cart: {file: cartstore/RedisCartStore.cs, functions: [GetCartAsync, AddItemAsync, EmptyCartAsync]}
+
+  redis-cart:
+    language: Redis (redis:alpine image)
+    role: The cart datastore. No volume or persistence configuration in app/docker-compose.yml.
+    protected: true  # storage and recovery configuration is off limits to the agent (see remediation/policy.py)
+    notes: >
+      A killed container restarts (restart: unless-stopped) with whatever its writable layer held;
+      nothing is configured to save the dataset before a kill.
+    upstream_resources: {requests: {cpu: 70m, memory: 200Mi}, limits: {cpu: 125m, memory: 256Mi}}
+
+  productcatalogservice:
+    language: Go
+    role: Serves the product list from products.json (in the image).
+    env_reads: [PORT, DISABLE_PROFILER, ENABLE_TRACING, COLLECTOR_SERVICE_ADDR, EXTRA_LATENCY, PROJECT_ID, REGION,
+                ALLOYDB_CLUSTER_NAME, ALLOYDB_DATABASE_NAME, ALLOYDB_INSTANCE_NAME, ALLOYDB_SECRET_NAME, ALLOYDB_TABLE_NAME]
+    tunable_env:
+      DISABLE_PROFILER:
+        effect: Any value disables the profiler (already set to 1 in Compose). Observability overhead only.
+    not_tunable:
+      EXTRA_LATENCY: injects artificial latency into every response (server.go:88) - a fault, never a fix.
+    calls: {}
+    failure_behaviour: >
+      Called by frontend (fatal on Home, Product, Cart, add-to-cart), checkoutservice and
+      recommendationservice. A paused catalog hangs all of them, since none of its callers set a deadline.
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:
+      dir: src/productcatalogservice
+      serves:
+        ListProducts: {file: product_catalog.go, functions: [ListProducts, parseCatalog]}
+        GetProduct: {file: product_catalog.go, functions: [GetProduct]}
+        SearchProducts: {file: product_catalog.go, functions: [SearchProducts]}
+
+  currencyservice:
+    language: Node.js
+    role: Currency list and conversion; called on every page render.
+    env_reads: [PORT, DISABLE_PROFILER, ENABLE_TRACING, COLLECTOR_SERVICE_ADDR, OTEL_SERVICE_NAME]
+    tunable_env:
+      DISABLE_PROFILER:
+        effect: Any value disables the profiler (already set to 1 in Compose). Observability overhead only.
+    calls: {}
+    failure_behaviour: Fatal to every frontend page (getCurrencies and convertCurrency are both fatal).
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:  # Node.js
+      dir: src/currencyservice
+      serves:
+        GetSupportedCurrencies: {file: server.js, functions: [getSupportedCurrencies, _getCurrencyData]}
+        Convert: {file: server.js, functions: [convert, _carry]}
+
+  paymentservice:
+    language: Node.js
+    role: Mock card charge, called by checkoutservice only.
+    env_reads: [PORT, DISABLE_PROFILER, ENABLE_TRACING, COLLECTOR_SERVICE_ADDR, OTEL_SERVICE_NAME]
+    tunable_env:
+      DISABLE_PROFILER:
+        effect: Any value disables the profiler (already set to 1 in Compose). Observability overhead only.
+    calls: {}
+    failure_behaviour: Fatal to placing an order (checkoutservice returns INTERNAL "failed to charge card").
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:  # Node.js
+      dir: src/paymentservice
+      serves:
+        Charge: {file: server.js, functions: [ChargeServiceHandler]}
+
+  shippingservice:
+    language: Go
+    role: Shipping quotes (cart page) and mock shipping (checkout).
+    env_reads: [PORT, DISABLE_PROFILER, DISABLE_STATS, DISABLE_TRACING]
+    tunable_env:
+      DISABLE_PROFILER:
+        effect: Any value disables the profiler (already set to 1 in Compose). Observability overhead only.
+    calls: {}
+    failure_behaviour: Fatal to the cart page (shipping quote) and to placing an order.
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:
+      dir: src/shippingservice
+      serves:
+        GetQuote: {file: main.go, functions: [GetQuote]}
+        ShipOrder: {file: main.go, functions: [ShipOrder]}
+
+  emailservice:
+    language: Python
+    role: Mock order-confirmation email, called by checkoutservice only.
+    env_reads: [PORT, DISABLE_PROFILER, ENABLE_TRACING, COLLECTOR_SERVICE_ADDR, GCP_PROJECT_ID]
+    tunable_env:
+      DISABLE_PROFILER:
+        effect: Presence disables the profiler (`"DISABLE_PROFILER" in os.environ`). Observability overhead only.
+    calls: {}
+    failure_behaviour: Tolerated - checkoutservice logs a warning and the order still succeeds (main.go PlaceOrder).
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:  # Python; `Class.method` where a name is defined twice (DummyEmailService)
+      dir: src/emailservice
+      serves:
+        SendOrderConfirmation: {file: email_server.py, functions: [EmailService.SendOrderConfirmation, send_email]}
+
+  checkoutservice:
+    language: Go
+    role: Places orders by orchestrating cart, catalog, currency, shipping, payment and email.
+    env_reads: [PORT, ENABLE_PROFILER, ENABLE_TRACING, COLLECTOR_SERVICE_ADDR, CART_SERVICE_ADDR, CURRENCY_SERVICE_ADDR,
+                EMAIL_SERVICE_ADDR, PAYMENT_SERVICE_ADDR, PRODUCT_CATALOG_SERVICE_ADDR, SHIPPING_SERVICE_ADDR]
+    tunable_env:
+      ENABLE_PROFILER:
+        pattern: "^[01]$"
+        effect: Stackdriver profiler on/off. Observability overhead only.
+    calls:
+      fatal: [cartservice, productcatalogservice, currencyservice, shippingservice, paymentservice]
+      tolerated: [emailservice]
+      ignored: "emptying the cart after shipping (`_ = cs.emptyUserCart(...)`, main.go:263)"
+    deadlines: none on downstream calls.
+    upstream_resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 200m, memory: 128Mi}}
+    code:
+      dir: src/checkoutservice
+      serves:
+        PlaceOrder: {file: main.go, functions: [PlaceOrder, prepareOrderItemsAndShippingQuoteFromCart]}
+      calls:  # main.go:314-387, one helper per dependency
+        cartservice: {file: main.go, functions: [getUserCart, emptyUserCart]}
+        productcatalogservice: {file: main.go, functions: [prepOrderItems]}
+        currencyservice: {file: main.go, functions: [convertCurrency]}
+        shippingservice: {file: main.go, functions: [quoteShipping, shipOrder]}
+        paymentservice: {file: main.go, functions: [chargeCard]}
+        emailservice: {file: main.go, functions: [sendOrderConfirmation]}
+
+  recommendationservice:
+    language: Python
+    role: Recommends products; fetches the full catalog from productcatalogservice on every call.
+    env_reads: [PORT, PRODUCT_CATALOG_SERVICE_ADDR, DISABLE_PROFILER, ENABLE_TRACING, COLLECTOR_SERVICE_ADDR, GCP_PROJECT_ID]
+    tunable_env:
+      DISABLE_PROFILER:
+        effect: Presence disables the profiler (already set in Compose). Observability overhead only.
+    calls: {productcatalogservice: "ListProducts on every request, no deadline"}
+    failure_behaviour: Tolerated by the frontend (product and cart pages render without recommendations).
+    upstream_resources: {requests: {cpu: 100m, memory: 220Mi}, limits: {cpu: 200m, memory: 450Mi}}
+    code:  # Python
+      dir: src/recommendationservice
+      serves:
+        ListRecommendations: {file: recommendation_server.py, functions: [ListRecommendations]}
+      calls:
+        productcatalogservice: {file: recommendation_server.py, functions: [ListRecommendations]}
+
+  adservice:
+    language: Java
+    role: Contextual ads on Home and Product.
+    env_reads: [PORT, DISABLE_STATS, DISABLE_TRACING]
+    tunable_env: {}
+    calls: {}
+    failure_behaviour: Tolerated - the frontend calls it with a 100 ms deadline and renders without an ad.
+    upstream_resources: {requests: {cpu: 200m, memory: 180Mi}, limits: {cpu: 300m, memory: 300Mi}}
+    code:  # Java
+      dir: src/adservice
+      serves:
+        GetAds: {file: src/main/java/hipstershop/AdService.java, functions: [getAds, getAdsByCategory, getRandomAds]}
+
+  loadgenerator:
+    language: Python (Locust)
+    role: Steady background traffic the baseline is measured under.
+    protected: true  # changing it changes the workload; before/after runs would not be comparable
+    upstream_resources: {requests: {cpu: 300m, memory: 256Mi}, limits: {cpu: 500m, memory: 512Mi}}
+
+compose_settings:
+  restart: >
+    All services already use unless-stopped. MEASURED in this harness (Docker 29.7.2, 2026-10-10,
+    kill-cartservice-1 and kill-redis-cart-1): after the `kill` action the container stayed
+    "exited (137)" with RestartCount 0 until the experiment's rollback started it - Docker treats a
+    kill sent through its API (`docker kill`) as a manual stop, so no restart policy (unless-stopped
+    or always) brings it back. The same holds for the `stop` action. Recovery after `kill` and `stop`
+    therefore comes from the rollback, not from the restart policy, and a restart-policy change cannot
+    shorten it. A restart policy only acts when the process exits by itself (a real crash or OOM).
+  healthcheck: Not settable by proposals. Under plain Compose a failing healthcheck does not restart a container anyway.
+
+# Fix patterns for code recommendations, each grounded in code upstream already ships. The code agent
+# sees the ones whose `faults` include the experiment's action; codelint enforces the "must" parts.
+fix_recipes:
+  call_deadline:
+    faults: [pause, spike, throttle]
+    recipe: >
+      A caller hangs on a frozen or slow dependency: bound the call in its wrapper the way upstream
+      bounds ads (frontend rpc.go:119-127 getAd): ctx, cancel := context.WithTimeout(ctx, d);
+      defer cancel(); then the call; keep returning the error so the caller's handling still runs.
+      Choose d well under a page load (upstream uses 100 ms for ads); checkoutservice main.go calls
+      take the same treatment.
+  optional_dependency:
+    faults: [kill, stop, pause]
+    recipe: >
+      A page fails because of a dependency it can live without: log and render without it, the way
+      upstream treats recommendations (frontend handlers.go:177-181): if err != nil {
+      log.WithField("error", err).Warn("...") } and carry on with the zero value. Never drop the log.
+      Frontend logging is logrus: a handler's `log` is its request logger (handlers.go:60), and rpc.go
+      sees the package-level `var log *logrus.Logger` (deployment_details.go:13) - never import the
+      standard "log" package there, it collides and does not compile.
+  datastore_reads_only:
+    faults: [kill, stop, pause]
+    recipe: >
+      cartservice cannot reach Redis: a read (GetCartAsync) may log the exception and return an empty
+      Hipstershop.Cart so pages render; a write (AddItemAsync, EmptyCartAsync) must still fail with
+      the RpcException - returning success without storing the item loses data (writes_lost).
