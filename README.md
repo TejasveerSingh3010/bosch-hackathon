@@ -10,7 +10,7 @@ An AI system that plans, injects and analyzes controlled failures in a cloud-nat
 4. **Stops itself** when an experiment does too much damage: the watchdog aborts and rolls back on error rate, latency, blast radius or lost monitoring, and anyone can force a stop.
 5. **Measures** what happened: time to detect, time to recover, which pages failed, and how error rate and latency moved against the baseline.
 
-Day 2 adds the AI planner (which experiment to run next, and why) and the analyst (ranked findings with recommended fixes). The interfaces they plug into already exist: `schemas.Experiment` in, `schemas.ExperimentResult` out. `planner/` is the empty package those agents will live in.
+On top of the engine sits a three-agent layer (see [The three agents](#the-three-agents)): an **Attack Ranker** (`planner/`) that ranks every attack by how harmful it would be and asks a human to approve one, a **Reporter** (`reporter/`) that documents what happened and where the failure started, and a **Fix Recommender** (`advisor/`) that turns the reports into ranked fixes. They plug into the existing contracts - `schemas.Experiment` in, `schemas.ExperimentResult` out - and they go through `safety.validate_plan` like any other plan. Phase 1 ships them behind a stubbed LLM, so they run deterministically offline.
 
 ## Architecture
 
@@ -47,7 +47,8 @@ The score is a weighted sum over the graph, not a learned model, so every number
 | `injector/` | Failure actions and rollback |
 | `safety/` | Validation, watchdog, kill switch, crash recovery |
 | `orchestrator/` | Runs one experiment end to end |
-| `planner/` | AI experiment planning (day 2; package is a stub today) |
+| `planner/`, `reporter/`, `advisor/` | The three agents: attack ranking, failure reporting, fix recommendations |
+| `agents/` | Shared agent plumbing: the LLM seam (stub + placeholder real client) and the agent schemas |
 | `results/` | Telemetry, baseline, and per-experiment records |
 
 ## Prerequisites
@@ -240,6 +241,48 @@ scripts\demo.bat
 
 Walks through monitoring status, the dependency map, a plan the safety layer refuses, a dry run, then two contrasting experiments: crashing the least critical service, and freezing one on the checkout path. The app and the monitor need to be running first.
 
+## The three agents
+
+A three-agent layer sits on top of the engine. The rule throughout is **the LLM proposes; deterministic code decides**: no agent calls Docker directly (they go through `ExperimentRunner`), nothing under `safety/` ever calls an LLM, and a human approves every attack.
+
+**Phase 1 ships with no real LLM.** Every agent has a deterministic implementation and runs entirely offline, so the whole pipeline works and the tests pass with no key and no network. The seam for the real model is `agents/llm.py`: `get_client()` reads `LLM_API_KEY`, `LLM_PROVIDER` and `LLM_MODEL` lazily from `.env`, returns `None` when no key is set (the deterministic path), and otherwise returns a placeholder `RealClient` that raises `NotConfigured` until the one `_complete` method is filled in. Every future model call site is marked `TODO(llm)`, structured output is validated by pydantic with one retry, and each call is logged to `results/agent_log.jsonl`. The deterministic path stays as the permanent fallback, so a demo never blocks even once the LLM is wired in.
+
+```powershell
+scripts\agents-demo.bat        :: the whole flow; app + monitor + baseline must be running
+```
+
+| Agent | Package | What it does | Output |
+|---|---|---|---|
+| 1. Attack Ranker | `planner/` | Holds the whole attack catalogue and ranks it from most to least harmful for the app's current state. Proposes only. | `results/ranking.json` |
+| 2. Reporter | `reporter/` | After an approved attack, says where the failure started, how it spread and how the app behaved. Read-only. | `reports/<id>.md` + `.json`, `reports/campaign.md` |
+| 3. Fix Recommender | `advisor/` | Turns the reports into ranked, deduplicated fixes. Recommendations only - it applies nothing. | `reports/recommendations.md` + `.json` |
+
+**Agent 1 - rank and approve.**
+
+```powershell
+python -m planner rank                    :: ranked table of every legal attack, writes results\ranking.json
+python -m planner approve 1               :: show the plan, type the experiment id to confirm, then run it
+python -m planner approve 1 --dry-run     :: validate and explain, change nothing
+```
+
+`rank` scores each attack deterministically by criticality x pages affected (highest harm first), after dry-running every candidate through the safety layer to record whether pre-flight would allow or refuse it. The ranking is state-dependent: re-run it and attacks already survived fall behind untested ones, and a degraded app marks every attack "pre-flight would refuse". `approve` prints `explain_plan`, requires the experiment id typed back, then calls `ExperimentRunner.run` (which re-checks pre-flight against fresh telemetry); Agent 2 and Agent 3 then run automatically. A rank-1 attack the watchdog aborts is reported, not hidden.
+
+**Agent 2 - report.** Runs automatically after an approved attack, or on demand:
+
+```powershell
+python -m reporter <experiment-id>
+```
+
+It builds an evidence pack in code (never the LLM) from the result, the telemetry window (60 s before injection to 30 s after recovery), Docker events, the captured container logs, the runner timeline, the graph and the baseline. Every claim in the report cites an evidence id (`E1`, `E2`, ...), observed facts and inferences are labelled separately, and anything the evidence cannot explain is stated as unknown. Container logs for the target and its direct callers are captured at injection and rollback into `results/<id>.logs/`.
+
+**Agent 3 - recommend.**
+
+```powershell
+python -m advisor
+```
+
+It reads every report plus the Compose file and the graph (not raw logs or telemetry), classifies each failure into one of nine root causes, and proposes a concrete Compose/config fix with an expected effect, effort, risk, confidence and a verification attack to re-run. Fixes are deduplicated across experiments, upstream-only fixes are labelled, thin evidence yields "run this experiment" rather than a guess, and what held up is praised so the team knows what not to touch. Because the upstream images are pinned to `v0.10.7` and cannot be rebuilt, fixes live in Compose or config.
+
 ## Tests
 
 ```powershell
@@ -256,7 +299,7 @@ scripts\test.bat
 | Runtime | Docker Compose |
 | Language | Python 3.11+ |
 | Libraries | pydantic (schema validation), networkx (graph analysis), matplotlib (graph rendering), streamlit (dashboard), requests, PyYAML, locust, pytest, ruff |
-| AI models | Day 2 — the planner and analyst (configured through `LLM_API_KEY` in `.env`) |
+| AI models | The three agents (`planner`, `reporter`, `advisor`), configured through `LLM_API_KEY` / `LLM_PROVIDER` / `LLM_MODEL` in `.env`. Phase 1 runs them deterministically with no key. |
 | AI assistance | Claude (Anthropic) was used while developing this repository |
 
 ## Troubleshooting
