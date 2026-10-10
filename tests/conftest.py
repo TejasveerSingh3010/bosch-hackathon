@@ -127,3 +127,10 @@ def no_langfuse(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests never trace to a real Langfuse, whatever the shell or .env holds."""
     for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL", "LANGFUSE_HOST"):
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never call a real model: an empty key (which .env loading does not override) selects the stub."""
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.delenv("LLM_MODEL", raising=False)

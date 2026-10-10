@@ -12,13 +12,14 @@ Outputs, all under reports/ by default (override with BOUTIQUE_REPORTS_DIR):
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agents.llm import LLMClient, NotConfigured, StubClient, get_client, log_call
+from agents.llm import LLMClient, LLMError, StubClient, get_client, log_call
 from safety.telemetry import TelemetryReader, TelemetryUnavailable, summarise_phase
 from schemas import ExperimentResult
 
@@ -36,6 +37,7 @@ from .models import Analysis, Claim, EvidencePack, LogFinding, Report
 from .render import to_console, to_markdown
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+log = logging.getLogger(__name__)
 LOG_PAD_S = 5
 
 
@@ -216,13 +218,12 @@ class Reporter:
         )
         client: LLMClient = self.client
         try:
-            # TODO(llm): with the real client this call sends prompts.SYSTEM + `user` to the model.
             analysis = client.complete_json(
                 task=prompts.TASK, system=prompts.SYSTEM, user=user, schema=Analysis, payload=payload
             )
-        except NotConfigured:
-            # The real client is not wired in or has no key: fall back to the rules,
-            # so a report is still written.
+        except LLMError as exc:
+            # No key, or the model failed: fall back to the rules, so a report is still written.
+            log.warning("reporter: %s; using the rule-based narrator", exc)
             client = StubClient()
             analysis = client.complete_json(
                 task=prompts.TASK, system=prompts.SYSTEM, user=user, schema=Analysis, payload=payload

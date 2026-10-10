@@ -1,13 +1,10 @@
 """The one place an LLM gets plugged in.
 
-Phase 1 ships with `StubClient` only: every agent runs end to end offline, and its "model output"
-is produced by a deterministic handler registered with `@stub_handler(task)`. Nothing here makes a
-network call and nothing needs an API key.
-
-When the real model is ready, only this file changes:
-
-  1. implement `RealClient.complete_json` (TODO(llm) below) with your provider's SDK;
-  2. make `get_client()` return it when LLM_API_KEY is set.
+`get_client()` returns `RealClient` (Groq, `REPORTER_MODEL` = openai/gpt-oss-20b, overridable with
+LLM_MODEL) when LLM_API_KEY is set in the environment or .env, and `StubClient` otherwise. The stub's
+"model output" is produced by a deterministic handler registered with `@stub_handler(task)` and makes
+no network call. Callers fall back to it when the real model fails (`LLMError`), so a report is
+always written. Tests set LLM_API_KEY to "" so they stay offline.
 
 Agents never import a provider SDK. They call `client.complete_json(...)` with the prompt text,
 the pydantic schema they expect back, and `payload` (the same evidence as a dict, which only the
@@ -19,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -29,8 +27,17 @@ from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REPORTER_MODEL = "openai/gpt-oss-20b"
+MAX_COMPLETION_TOKENS = 4000
+log = logging.getLogger(__name__)
 
-class NotConfigured(RuntimeError):
+
+class LLMError(RuntimeError):
+    """The real model could not produce a valid answer; callers fall back to the stub."""
+
+
+class NotConfigured(LLMError):
     """The requested LLM backend has no key, or has not been wired in yet."""
 
 
@@ -80,17 +87,35 @@ class StubClient:
         return schema.model_validate(handler(payload))
 
 
+def _api_key() -> str:
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / ".env")  # never overrides a variable already set (tests set it to "")
+    key = os.getenv("LLM_API_KEY", "")
+    return "" if key == "your-key-here" else key
+
+
 class RealClient:
-    """Placeholder for the real model. Not wired in yet."""
+    """Groq chat completions with a strict JSON schema, sized and traced like the remediation agent.
 
-    name = "llm"
+    A reply that does not match the schema gets one retry with the validation error appended; any
+    other failure raises `LLMError`.
+    """
 
-    def __init__(self) -> None:
-        self.api_key = os.getenv("LLM_API_KEY", "")
-        self.provider = os.getenv("LLM_PROVIDER", "")
-        self.model = os.getenv("LLM_MODEL", "")
-        if not self.api_key:
-            raise NotConfigured("LLM_API_KEY is not set")
+    def __init__(self, model: str | None = None, client: Any = None) -> None:
+        self.model = model or os.getenv("LLM_MODEL") or REPORTER_MODEL
+        self.name = f"llm:{self.model}"
+        if client is None:
+            key = _api_key()
+            if not key:
+                raise NotConfigured("LLM_API_KEY is not set")
+            import groq
+
+            client = groq.Groq(api_key=key)
+        self.client = client
+        from remediation.agent import MinuteBudget
+
+        self.budget = MinuteBudget()
 
     def complete_json(
         self,
@@ -98,18 +123,58 @@ class RealClient:
         task: str,
         system: str,
         user: str,
-        schema: type[T],  # noqa: ARG002
+        schema: type[T],
         payload: dict[str, Any],
     ) -> T:
-        # TODO(llm): call the provider with `system` and `user`, ask for JSON matching
-        # `schema.model_json_schema()`, then `return schema.model_validate_json(text)`.
-        # Retry once with the validation error appended, then raise. Ignore `payload`.
-        raise NotConfigured(f"RealClient is not wired in yet (task {task!r})")
+        from agents import tracing
+        from remediation.agent import GROQ_TPM, REASONING_EFFORT, estimate_request, wire_schema
+
+        system, wire = wire_schema(schema, system)
+        size = estimate_request(system, user, json.dumps(wire))
+        if size > GROQ_TPM:
+            raise LLMError(f"{task}: the request is about {size} tokens, over Groq's {GROQ_TPM:,} a minute")
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        params = {"max_completion_tokens": MAX_COMPLETION_TOKENS, "reasoning_effort": REASONING_EFFORT}
+        for attempt in (1, 2):
+            self.budget.wait_for(size)
+            try:
+                with tracing.generation(task, self.model, messages, params) as traced:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {"name": task.replace(".", "_"), "schema": wire, "strict": True},
+                        },
+                        **params,
+                    )
+                    traced.finish(response)
+            except Exception as exc:  # SDK errors: auth, rate limit, connection, schema refusal
+                raise LLMError(f"{task}: {self.model} request failed: {exc}") from exc
+            usage = getattr(response, "usage", None)
+            self.budget.record(int(getattr(usage, "total_tokens", 0) or size))
+            choice = response.choices[0]
+            text = choice.message.content or ""
+            if choice.finish_reason == "length":
+                raise LLMError(f"{task}: the answer was cut off at {MAX_COMPLETION_TOKENS} tokens")
+            try:
+                return schema.model_validate_json(text)
+            except ValueError as exc:
+                if attempt == 2:
+                    raise LLMError(f"{task}: the reply did not match {schema.__name__}: {exc}") from exc
+                log.info("%s: invalid reply, retrying once: %s", task, exc)
+                fix = f"That JSON is invalid: {exc}. Return corrected JSON only."
+                messages = [*messages, {"role": "assistant", "content": text},
+                            {"role": "user", "content": fix}]
+        raise AssertionError("unreachable")
 
 
 def get_client() -> LLMClient:
-    """Phase 1: always the stub. TODO(llm): return RealClient() when LLM_API_KEY is set."""
-    return StubClient()
+    """The real model when LLM_API_KEY is set (environment or .env), else the stub."""
+    try:
+        return RealClient()
+    except NotConfigured:
+        return StubClient()
 
 
 # --------------------------------------------------------------------------- audit log
@@ -140,4 +205,7 @@ def log_call(
         pass
 
 
-__all__ = ["LLMClient", "NotConfigured", "RealClient", "StubClient", "get_client", "log_call", "stub_handler"]
+__all__ = [
+    "LLMClient", "LLMError", "NotConfigured", "RealClient", "StubClient",
+    "get_client", "log_call", "stub_handler",
+]

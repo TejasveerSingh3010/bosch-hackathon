@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.llm import NotConfigured, RealClient, StubClient, get_client
+from agents.llm import LLMError, NotConfigured, RealClient, StubClient, get_client
 from reporter import demo as demo_module
 from reporter.__main__ import main as reporter_main
 from reporter.demo import SCENARIOS, build_scenario, run_demo
@@ -142,13 +142,89 @@ def test_stub_is_the_default_and_unknown_tasks_are_refused():
         StubClient().complete_json(task="nope", system="", user="", schema=Analysis, payload={})
 
 
-def test_real_client_needs_a_key_and_is_not_wired(monkeypatch):
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+def test_real_client_needs_a_key_and_defaults_to_gpt_oss_20b(monkeypatch):
     with pytest.raises(NotConfigured):
-        RealClient()
-    monkeypatch.setenv("LLM_API_KEY", "x")
-    with pytest.raises(NotConfigured, match="not wired"):
-        RealClient().complete_json(task="t", system="", user="", schema=Analysis, payload={})
+        RealClient()  # conftest sets an empty key, which .env does not override
+    client = RealClient(client=_fake_groq([]))
+    assert client.model == "openai/gpt-oss-20b" and client.name == "llm:openai/gpt-oss-20b"
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-120b")
+    assert RealClient(client=_fake_groq([])).model == "openai/gpt-oss-120b"
+
+
+ANALYSIS_JSON = json.dumps({
+    "headline": "productcatalogservice paused", "severity": "major", "summary": "s",
+    "failure_point": "productcatalogservice", "origin": None, "propagation": [], "what_worked": [],
+    "anomalies": [],
+})
+
+
+def _fake_groq(replies, calls=None):
+    """A Groq client stand-in returning `replies` in order: (finish_reason, content) or an exception."""
+    from types import SimpleNamespace
+
+    replies = list(replies)
+
+    def create(**kwargs):
+        if calls is not None:
+            calls.append(kwargs)
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        finish, content = reply
+        message = SimpleNamespace(content=content)
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason=finish, message=message)],
+                               usage=SimpleNamespace(total_tokens=100))
+
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+def _ask(client):
+    return client.complete_json(task="reporter.analyse", system="sys", user="evidence", schema=Analysis,
+                                payload={})
+
+
+def test_real_client_sends_a_strict_schema_and_parses_the_reply():
+    calls = []
+    analysis = _ask(RealClient(client=_fake_groq([("stop", ANALYSIS_JSON)], calls)))
+    assert analysis.severity == "major"
+    sent = calls[0]
+    assert sent["model"] == "openai/gpt-oss-20b"
+    assert sent["response_format"]["json_schema"]["strict"] is True
+    assert sent["response_format"]["json_schema"]["name"] == "reporter_analyse"
+
+
+def test_real_client_retries_once_with_the_validation_error_then_gives_up():
+    calls = []
+    fixed = _ask(RealClient(client=_fake_groq([("stop", "{}"), ("stop", ANALYSIS_JSON)], calls)))
+    assert fixed.headline and len(calls) == 2
+    assert "invalid" in calls[1]["messages"][-1]["content"]
+    with pytest.raises(LLMError, match="did not match"):
+        _ask(RealClient(client=_fake_groq([("stop", "{}"), ("stop", "{}")])))
+    with pytest.raises(LLMError, match="cut off"):
+        _ask(RealClient(client=_fake_groq([("length", "")])))
+    with pytest.raises(LLMError, match="request failed"):
+        _ask(RealClient(client=_fake_groq([RuntimeError("HTTP 429")])))
+
+
+def test_a_failing_model_still_gets_a_report_from_the_rules(dirs):
+    results, reports = dirs
+    model = RealClient(client=_fake_groq([RuntimeError("HTTP 503")]))
+    result, findings = build_scenario("pause", results)
+    report = Reporter(results, reports, client=model, project=PROJECT).report_experiment(
+        result, log_findings=findings
+    )
+    assert report.narrator == "stub" and report.analysis.origin.component == "productcatalogservice"
+
+
+def test_a_working_model_names_itself_as_the_narrator(dirs):
+    results, reports = dirs
+    model = RealClient(client=_fake_groq([("stop", ANALYSIS_JSON)]))
+    result, findings = build_scenario("pause", results)
+    report = Reporter(results, reports, client=model, project=PROJECT).report_experiment(
+        result, log_findings=findings
+    )
+    assert report.narrator == "llm:openai/gpt-oss-20b"
+    assert report.analysis.headline == "productcatalogservice paused"
 
 
 def test_a_broken_real_client_falls_back_to_the_rules(dirs):
