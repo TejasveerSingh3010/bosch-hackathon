@@ -1,0 +1,148 @@
+# Local Docker Compose stack for Online Boutique (the system under test).
+# Uses published images from Google's CI registry (same as kubernetes-manifests), pinned to v0.10.7.
+#
+# Start it with scripts\app-up.bat (or `docker compose up -d` from this folder).
+# The frontend is at http://localhost:8080.
+#
+# The monitoring dashboard is deliberately NOT a service here: it runs on the host
+# (scripts\monitor.bat) because it needs the docker CLI to read container health, and because the
+# thing that watches the experiment should not be inside the blast radius.
+# `loadgenerator` provides the steady traffic the baseline is measured under.
+
+name: online-boutique
+
+x-image: &image-prefix us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo
+x-tag: &image-tag v0.10.7
+
+services:
+  redis-cart:
+    image: redis:alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  cartservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/cartservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis-cart:6379
+    depends_on:
+      - redis-cart
+    ports:
+      - "7070:7070"
+
+  productcatalogservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/productcatalogservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "3550"
+      DISABLE_PROFILER: "1"
+    ports:
+      - "3550:3550"
+
+  currencyservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/currencyservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "7000"
+      DISABLE_PROFILER: "1"
+    ports:
+      - "7000:7000"
+
+  paymentservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/paymentservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "50051"
+      DISABLE_PROFILER: "1"
+    ports:
+      - "50051:50051"
+
+  shippingservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/shippingservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "50051"
+      DISABLE_PROFILER: "1"
+
+  emailservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/emailservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DISABLE_PROFILER: "1"
+
+  checkoutservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/checkoutservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "5050"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      SHIPPING_SERVICE_ADDR: shippingservice:50051
+      PAYMENT_SERVICE_ADDR: paymentservice:50051
+      EMAIL_SERVICE_ADDR: emailservice:8080
+      CURRENCY_SERVICE_ADDR: currencyservice:7000
+      CART_SERVICE_ADDR: cartservice:7070
+    depends_on:
+      - productcatalogservice
+      - shippingservice
+      - paymentservice
+      - emailservice
+      - currencyservice
+      - cartservice
+    ports:
+      - "5050:5050"
+
+  recommendationservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/recommendationservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      DISABLE_PROFILER: "1"
+    depends_on:
+      - productcatalogservice
+
+  adservice:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/adservice:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "9555"
+    ports:
+      - "9555:9555"
+
+  frontend:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/frontend:v0.10.7
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      CURRENCY_SERVICE_ADDR: currencyservice:7000
+      CART_SERVICE_ADDR: cartservice:7070
+      RECOMMENDATION_SERVICE_ADDR: recommendationservice:8080
+      SHIPPING_SERVICE_ADDR: shippingservice:50051
+      CHECKOUT_SERVICE_ADDR: checkoutservice:5050
+      AD_SERVICE_ADDR: adservice:9555
+      SHOPPING_ASSISTANT_SERVICE_ADDR: shoppingassistantservice:80
+      ENABLE_PROFILER: "0"
+      ENV_PLATFORM: local
+    depends_on:
+      - productcatalogservice
+      - currencyservice
+      - cartservice
+      - recommendationservice
+      - shippingservice
+      - checkoutservice
+      - adservice
+    ports:
+      - "8080:8080"
+
+  loadgenerator:
+    image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/loadgenerator:v0.10.7
+    restart: unless-stopped
+    environment:
+      FRONTEND_ADDR: frontend:8080
+      USERS: "10"
+      RATE: "1"
+    depends_on:
+      - frontend

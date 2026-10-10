@@ -223,3 +223,14 @@ __marimo__/
 results/*.json
 *.tar
 images.txt
+
+# monitor runtime output
+results/SLA_BREACH.flag
+results/*.tmp
+results/*.jsonl
+results/*.jsonl.1
+
+# Keep the generated dependency map and the baseline: both are submission evidence.
+# telemetry.json / telemetry_log.jsonl stay ignored (large, machine-specific, regenerated).
+!results/graph.json
+!results/baseline.json

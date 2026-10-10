@@ -1,3 +1,7 @@
+# Everything the project needs. scripts\setup.bat installs this.
+# Keep this in step with monitor/requirements.txt (the monitor-only subset).
+
+# --- chaos engine (injector, safety, orchestrator, mapper) ---
 docker
 requests
 pyyaml
@@ -6,3 +10,12 @@ matplotlib
 pydantic
 locust
 python-dotenv
+
+# --- monitoring (telemetry, dashboard) ---
+streamlit>=1.50
+streamlit-autorefresh>=1.0.1
+pandas>=2.1
+
+# --- development ---
+pytest
+ruff

@@ -1,0 +1,68 @@
+{
+  "captured_at": "2026-10-10T08:07:22.937000+00:00",
+  "source": "telemetry.json",
+  "window": {
+    "start": "2026-10-10T13:35:23.460966+05:30",
+    "end": "2026-10-10T13:37:21.519742+05:30",
+    "seconds": 118,
+    "samples": 60
+  },
+  "overall": {
+    "error_rate_pct": 0.0,
+    "sample_p95_ms": {
+      "mean": 33.76,
+      "p95": 52.03,
+      "p99": 57.85,
+      "max": 57.85
+    }
+  },
+  "endpoints": {
+    "Home": {
+      "n": 60,
+      "mean_ms": 32.79,
+      "std_ms": 8.66,
+      "p50_ms": 28.26,
+      "p95_ms": 52.03,
+      "p99_ms": 57.85,
+      "max_ms": 57.85,
+      "ucl_ms": 58.76,
+      "requests": 60,
+      "error_rate_pct": 0.0
+    },
+    "Cart": {
+      "n": 60,
+      "mean_ms": 22.32,
+      "std_ms": 5.56,
+      "p50_ms": 20.3,
+      "p95_ms": 35.38,
+      "p99_ms": 41.41,
+      "max_ms": 41.41,
+      "ucl_ms": 39.0,
+      "requests": 60,
+      "error_rate_pct": 0.0
+    },
+    "Product": {
+      "n": 60,
+      "mean_ms": 22.41,
+      "std_ms": 4.75,
+      "p50_ms": 20.92,
+      "p95_ms": 33.65,
+      "p99_ms": 35.81,
+      "max_ms": 35.81,
+      "ucl_ms": 36.65,
+      "requests": 60,
+      "error_rate_pct": 0.0
+    }
+  },
+  "workloads": {
+    "containers": 12,
+    "all_ready_ratio": 1.0,
+    "restarts_in_window": 0,
+    "resources": {}
+  },
+  "quality_warnings": [
+    "window is only 118s; capture at least 2-5 minutes for a stable baseline",
+    "no CPU/memory data in this history (monitor was started before resource sampling existed)",
+    "no checkout probe data; checkout-path services (payment, shipping, email) are not covered"
+  ]
+}
