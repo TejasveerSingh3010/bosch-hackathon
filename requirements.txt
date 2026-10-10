@@ -14,6 +14,7 @@ python-dotenv
 streamlit>=1.50
 streamlit-autorefresh>=1.0.1
 pandas>=2.1
+grpcio  # direct gRPC health checks of each service (falls back to a TCP check without it)
 
 # --- development ---
 pytest

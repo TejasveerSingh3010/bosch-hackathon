@@ -10,9 +10,11 @@ Only fixed, explicitly built command lists are executed - never a shell string.
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,9 @@ FLAG_FILE = OUT_DIR / "SLA_BREACH.flag"
 LOG_PATH = OUT_DIR / "telemetry_log.jsonl"
 LOG_MAX_BYTES = int(os.getenv("BOUTIQUE_LOG_MAX_MB", "60")) * 1024 * 1024  # rotates once to .jsonl.1
 JOURNEY_EVERY = int(os.getenv("BOUTIQUE_JOURNEY_EVERY", "5"))  # checkout probe every N samples; 0 = off
+# While the checkout probe has never worked, it is retried this often (in samples) instead of
+# being switched off for good, so a fixed app or form is picked up without restarting the monitor.
+JOURNEY_RETRY_EVERY = int(os.getenv("BOUTIQUE_JOURNEY_RETRY_EVERY", "30"))
 BURST_MAX_REQUESTS = int(os.getenv("BOUTIQUE_BURST_MAX_REQUESTS", "20000"))
 BURST_MAX_WORKERS = int(os.getenv("BOUTIQUE_BURST_MAX_WORKERS", "20"))
 BURST_MAX_SECONDS = int(os.getenv("BOUTIQUE_BURST_MAX_SECONDS", "600"))
@@ -50,6 +55,57 @@ ENDPOINT_PATHS = {
 
 COMPOSE_PROJECT = "com.docker.compose.project"
 COMPOSE_SERVICE = "com.docker.compose.service"
+
+# ---------------- Per-service coverage ----------------
+# Not part of the application under test: shown, but never counted as an outage.
+INFRA_SERVICES = {"loadgenerator"}
+
+# What a user would notice when each service is down, taken from the v0.10.7 frontend and checkout
+# source. `pages` lists the probes that fail; an empty list means the failure is invisible to every
+# HTTP probe and is only caught by the container state and the direct health check below.
+#   - ads and recommendations are optional on every page: the frontend logs and carries on.
+#   - checkoutservice only logs a failed confirmation email, so an order still succeeds.
+#   - /cart always asks shippingservice for a quote (even for an empty cart) and fails without it.
+SERVICE_IMPACT = {
+    "frontend": ["Home", "Product", "Cart", "Checkout"],
+    "productcatalogservice": ["Home", "Product", "Checkout"],
+    "currencyservice": ["Home", "Product", "Cart", "Checkout"],
+    "cartservice": ["Home", "Product", "Cart", "Checkout"],
+    "redis-cart": ["Home", "Product", "Cart", "Checkout"],
+    "shippingservice": ["Cart", "Checkout"],
+    "checkoutservice": ["Checkout"],
+    "paymentservice": ["Checkout"],
+    "emailservice": [],
+    "adservice": [],
+    "recommendationservice": [],
+    "loadgenerator": [],
+}
+SERVICE_IMPACT_NOTE = {
+    "emailservice": "checkout logs the failure and still succeeds",
+    "adservice": "frontend hides the ad",
+    "recommendationservice": "frontend hides recommendations",
+    "loadgenerator": "traffic generator, not part of the app",
+}
+
+# Direct health checks against the host ports published in app/docker-compose.yml.
+# "grpc" = the standard grpc.health.v1 Check every Online Boutique backend implements;
+# "redis" = PING. A paused container accepts the TCP connection but never answers, so the
+# call times out and the service is reported down.
+SERVICE_PROBE_HOST = os.getenv("BOUTIQUE_SERVICE_HOST", "127.0.0.1")
+SERVICE_PROBE_TIMEOUT_S = float(os.getenv("BOUTIQUE_SERVICE_PROBE_TIMEOUT", "1.0"))
+SERVICE_PROBES_ON = os.getenv("BOUTIQUE_SERVICE_PROBES", "1") != "0"
+SERVICE_PROBES = {
+    "cartservice": ("grpc", 7070),
+    "productcatalogservice": ("grpc", 3550),
+    "currencyservice": ("grpc", 7000),
+    "paymentservice": ("grpc", 50051),
+    "shippingservice": ("grpc", 50052),
+    "emailservice": ("grpc", 8081),
+    "checkoutservice": ("grpc", 5050),
+    "recommendationservice": ("grpc", 8082),
+    "adservice": ("grpc", 9555),
+    "redis-cart": ("redis", 6379),
+}
 
 
 def _run(cmd, timeout=8):
@@ -89,54 +145,84 @@ def classify_error(status, exc=None):
     return "none"
 
 
+def _probe_one(name, url, simulate_failure):
+    started = time.perf_counter()
+    status = 0
+    error = ""
+    exc = None
+    try:
+        status = int(requests.get(url, timeout=PROBE_TIMEOUT_S).status_code)
+    except requests.RequestException as e:
+        exc, error = e, str(e)[:160]
+    latency_ms = (time.perf_counter() - started) * 1000
+    success = 200 <= status < 400
+    error_type = classify_error(status, exc)
+    if simulate_failure:
+        # Tests the monitor's alerting path only; the application is untouched.
+        status, success, error, error_type = 599, False, "SIMULATED PROBE FAILURE (application not modified)", "simulated"
+    return {
+        "endpoint": name, "url": url, "status": status,
+        "latency_ms": round(latency_ms, 2), "success": success, "error": error,
+        "error_type": error_type,
+    }
+
+
 def probe_endpoints(base, simulate_failure=False):
-    rows = []
-    for name, path in ENDPOINT_PATHS.items():
-        url = base + path
-        started = time.perf_counter()
-        status = 0
-        error = ""
-        exc = None
-        try:
-            status = int(requests.get(url, timeout=PROBE_TIMEOUT_S).status_code)
-        except requests.RequestException as e:
-            exc, error = e, str(e)[:160]
-        latency_ms = (time.perf_counter() - started) * 1000
-        success = 200 <= status < 400
-        error_type = classify_error(status, exc)
-        if simulate_failure:
-            # Tests the monitor's alerting path only; the application is untouched.
-            status, success, error, error_type = 599, False, "SIMULATED PROBE FAILURE (application not modified)", "simulated"
-        rows.append({
-            "endpoint": name, "url": url, "status": status,
-            "latency_ms": round(latency_ms, 2), "success": success, "error": error,
-            "error_type": error_type,
-        })
-    return rows
+    """GET every monitored page at once (not one after another), so one hung page costs at most
+    PROBE_TIMEOUT_S per sample instead of that times the number of pages."""
+    with ThreadPoolExecutor(max_workers=len(ENDPOINT_PATHS)) as pool:
+        futures = [pool.submit(_probe_one, name, base + path, simulate_failure)
+                   for name, path in ENDPOINT_PATHS.items()]
+        return [f.result() for f in futures]
 
 
 class CheckoutJourney:
     """Synthetic purchase (add to cart -> place order) through the frontend.
 
-    It exercises cart, checkout, payment, shipping, email, currency and product catalog, which the
-    plain page probes never touch. It runs every JOURNEY_EVERY samples and its last result is carried
-    into the samples in between (with age_s) so a failure isn't hidden by the next quiet sample.
-    If it has never succeeded (e.g. form fields differ on this app version) it switches itself off
-    after a few tries, so it can never cause a permanent false alarm."""
-    MAX_FAILS_BEFORE_FIRST_SUCCESS = 3
+    It exercises cart, checkout, payment, shipping, currency and product catalog, which the plain
+    page probes only partly touch. It runs every JOURNEY_EVERY samples and its last result is
+    carried into the samples in between (with age_s) so a failure isn't hidden by the next quiet
+    sample.
 
-    def __init__(self, base, every=JOURNEY_EVERY):
+    Until it has succeeded once, its result is kept out of the error rate (so a form mismatch can
+    never raise a false alarm), but it is NOT switched off: after a few failed tries it keeps
+    retrying every JOURNEY_RETRY_EVERY samples and reports why it fails in `info()`, so the
+    dashboard can say which services are unmonitored and why."""
+    MAX_FAILS_BEFORE_BACKOFF = 3
+    # Digits only: the frontend validates this with go-playground's `credit_card` rule. This is
+    # the demo app's own mock Visa (it passes the Luhn check).
+    CARD_NUMBER = "4432801561520454"
+
+    def __init__(self, base, every=JOURNEY_EVERY, retry_every=JOURNEY_RETRY_EVERY):
         self.base, self.every = base, every
+        self.retry_every = max(1, retry_every)
         self.enabled = every > 0
         self.disabled_reason = None if self.enabled else "disabled by configuration"
         self.ever_ok = False
+        self.last_error = None
         self._fails = 0
         self._ticks = 0
         self._last = None
         self._last_at = 0.0
 
+    @property
+    def status(self):
+        if not self.enabled:
+            return "off"
+        return "verified" if self.ever_ok else "unverified"
+
     def info(self):
-        return {"enabled": self.enabled, "verified": self.ever_ok, "disabled_reason": self.disabled_reason}
+        return {"enabled": self.enabled, "verified": self.ever_ok, "status": self.status,
+                "failed_tries": self._fails, "last_error": self.last_error,
+                "disabled_reason": self.disabled_reason}
+
+    @staticmethod
+    def _excerpt(response):
+        """The frontend's error page puts the reason in a <pre> block; fall back to the page text."""
+        text = response.text or ""
+        m = re.search(r"<pre[^>]*>(.*?)</pre>", text, re.S | re.I)
+        text = m.group(1) if m else re.sub(r"<[^>]+>", " ", text)
+        return re.sub(r"\s+", " ", text).strip()[:200]
 
     def _run_once(self):
         started = time.perf_counter()
@@ -147,19 +233,20 @@ class CheckoutJourney:
             add = sess.post(self.base + "/cart", data={"product_id": "OLJCESPC7Z", "quantity": "1"},
                             timeout=5, allow_redirects=False)
             if add.status_code >= 400:
-                status, error = add.status_code, "add-to-cart failed"
+                status = add.status_code
+                error = f"add-to-cart failed: {self._excerpt(add)}"
             else:
                 year = datetime.now().year + 2
                 order = sess.post(self.base + "/cart/checkout", timeout=10, data={
                     "email": "monitor@example.com", "street_address": "1600 Amphitheatre Parkway",
                     "zip_code": "94043", "city": "Mountain View", "state": "CA", "country": "United States",
-                    "credit_card_number": "4432-8015-6152-0454",  # the demo app's built-in mock card
+                    "credit_card_number": self.CARD_NUMBER,
                     "credit_card_expiration_month": "1", "credit_card_expiration_year": str(year),
                     "credit_card_cvv": "672",
                 })
                 status = order.status_code
                 if status >= 400:
-                    error = "place-order failed"
+                    error = f"place-order failed: {self._excerpt(order)}"
         except requests.RequestException as e:
             exc, error = e, str(e)[:160]
         return {
@@ -168,25 +255,31 @@ class CheckoutJourney:
             "success": 200 <= status < 400, "error": error, "error_type": classify_error(status, exc),
         }
 
+    def _due(self):
+        if self._last is None:
+            return True
+        if self.ever_ok:
+            return self._ticks % self.every == 0
+        if self._fails < self.MAX_FAILS_BEFORE_BACKOFF:
+            return True
+        return self._ticks % self.retry_every == 0
+
     def tick(self):
         """Call once per sample. Returns the row to include (fresh or carried over) or None."""
         if not self.enabled:
             return None
         self._ticks += 1
-        if self._last is None or not self.ever_ok or self._ticks % self.every == 0:
+        if self._due():
             row = self._run_once()
             self._last, self._last_at = row, time.time()
             if row["success"]:
-                self.ever_ok, self._fails = True, 0
-            elif not self.ever_ok:
-                self._fails += 1
-                if self._fails >= self.MAX_FAILS_BEFORE_FIRST_SUCCESS:
-                    self.enabled = False
-                    self.disabled_reason = (f"never succeeded in {self._fails} tries (last: HTTP {row['status']}, "
-                                            f"{row['error_type']}); excluded from error rate")
-                return None  # not trusted until it has worked once
+                self.ever_ok, self._fails, self.last_error = True, 0, None
+            else:
+                self.last_error = f"HTTP {row['status']} ({row['error_type']}): {row['error']}"[:300]
+                if not self.ever_ok:
+                    self._fails += 1
         if not self.ever_ok:
-            return None
+            return None  # not trusted until it has worked once
         row = dict(self._last)
         row["age_s"] = round(time.time() - self._last_at, 1)
         return row
@@ -304,7 +397,8 @@ def get_docker_snapshot(project=""):
             state = c.get("State") or {}
             name = (c.get("Name") or "").lstrip("/")
             status = state.get("Status", "unknown")
-            running = bool(state.get("Running")) and not state.get("Restarting")
+            # A paused container still reports Running=True, but it answers nothing.
+            running = bool(state.get("Running")) and not state.get("Restarting") and not state.get("Paused")
             health = (state.get("Health") or {}).get("Status")
             ready = running and health in (None, "healthy")
             started = _parse_docker_time(state.get("StartedAt", ""))
@@ -316,6 +410,7 @@ def get_docker_snapshot(project=""):
                 "ready": "Ready" if ready else "Not ready",
                 "restarts": int(c.get("RestartCount", 0)),
                 "uptime_s": round(now - started) if (running and started) else None,
+            "paused": bool(state.get("Paused")),
                 "oom_killed": bool(state.get("OOMKilled")),
                 "health": health,
                 "exit_code": None if running else state.get("ExitCode"),
@@ -481,6 +576,170 @@ def restart_frontend_container(project=""):
     return True, f"Restarted frontend container {name} (SIGKILL then start). Watch probes and uptime recover."
 
 
+# ---------------- Direct service health checks ----------------
+_GRPC_HEALTH = {0: "unknown", 1: "serving", 2: "not serving", 3: "service unknown"}
+
+
+def _grpc_health(host, port, timeout):
+    """grpc.health.v1.Health/Check with an empty request, decoded by hand so no generated stubs
+    are needed. Returns (ok, detail)."""
+    import grpc  # optional dependency; the caller falls back to a TCP check without it
+
+    with grpc.insecure_channel(f"{host}:{port}") as channel:
+        check = channel.unary_unary("/grpc.health.v1.Health/Check",
+                                    request_serializer=lambda _: b"",
+                                    response_deserializer=lambda raw: raw)
+        try:
+            raw = check(None, timeout=timeout)
+        except grpc.RpcError as exc:
+            code = exc.code()
+            if code == grpc.StatusCode.UNIMPLEMENTED:
+                return True, "responding (no health API)"
+            return False, f"gRPC {code.name.lower().replace('_', ' ')}"
+    # HealthCheckResponse is a single varint field 1 (tag 0x08); empty means UNKNOWN (0).
+    status = raw[1] if len(raw) >= 2 and raw[0] == 0x08 else 0
+    return status == 1, _GRPC_HEALTH.get(status, f"status {status}")
+
+
+def _redis_ping(host, port, timeout):
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(b"PING\r\n")
+        reply = sock.recv(64)
+    if reply.startswith(b"+PONG"):
+        return True, "PONG"
+    return False, f"unexpected reply {reply[:20]!r}"
+
+
+def _tcp_open(host, port, timeout):
+    with socket.create_connection((host, port), timeout=timeout):
+        return True, "port open (install grpcio for a real health check)"
+
+
+def check_service(name, host=None, timeout=None):
+    """One direct health check. Returns {ok, detail, latency_ms, kind, port}."""
+    kind, port = SERVICE_PROBES[name]
+    host = host or SERVICE_PROBE_HOST
+    timeout = SERVICE_PROBE_TIMEOUT_S if timeout is None else timeout
+    started = time.perf_counter()
+    try:
+        if kind == "redis":
+            ok, detail = _redis_ping(host, port, timeout)
+        else:
+            try:
+                ok, detail = _grpc_health(host, port, timeout)
+            except ImportError:
+                kind = "tcp"
+                ok, detail = _tcp_open(host, port, timeout)
+    except TimeoutError:  # socket.timeout is TimeoutError on Python 3.10+
+        ok, detail = False, "timed out (hung or paused)"
+    except ConnectionRefusedError:
+        ok, detail = False, "connection refused (process down)"
+    except OSError as exc:
+        ok, detail = False, f"unreachable: {exc}"[:120]
+    return {"ok": ok, "detail": detail, "kind": kind, "port": port,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+
+
+def check_all_services(host=None, timeout=None, names=None):
+    names = list(names or SERVICE_PROBES)
+    with ThreadPoolExecutor(max_workers=max(1, len(names))) as pool:
+        futures = {name: pool.submit(check_service, name, host, timeout) for name in names}
+        return {name: f.result() for name, f in futures.items()}
+
+
+class ServiceProbeSampler:
+    """Runs the direct health checks on a background thread (a hung service takes up to the
+    timeout to answer), so the 2-second probe loop never waits on them."""
+
+    def __init__(self, interval=2.0, host=None, timeout=None):
+        self.interval, self.host, self.timeout = interval, host, timeout
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._data, self._updated = {}, None
+        self._thread = None
+
+    def start(self):
+        if self._thread is None and SERVICE_PROBES_ON:
+            self._thread = threading.Thread(target=self._loop, name="service-probes", daemon=True)
+            self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                result = check_all_services(self.host, self.timeout)
+                with self._lock:
+                    self._data, self._updated = result, time.time()
+            except Exception:  # never let a probe bug kill the sampler
+                pass
+            self._stop.wait(self.interval)
+
+    def latest(self):
+        """{service: check result}, or {} until the first round has finished. Results older than
+        three intervals are dropped, so a stuck sampler cannot report stale health."""
+        with self._lock:
+            data, updated = dict(self._data), self._updated
+        if updated is None or time.time() - updated > max(3 * self.interval, 5):
+            return {}
+        return data
+
+
+def service_status(snap, probes=None):
+    """One row per service: container state + direct health check + what a user would notice.
+
+    A service is `down` when its container is not ready or its direct check fails. Services in
+    INFRA_SERVICES are listed but never counted as down."""
+    probes = probes or {}
+    rows, seen = [], set()
+    for pod in snap.get("pods") or []:
+        app = pod.get("app") or pod.get("name")
+        seen.add(app)
+        rows.append(_service_row(app, pod, probes.get(app)))
+    for app, probe in probes.items():  # no container data (e.g. docker unavailable)
+        if app not in seen:
+            rows.append(_service_row(app, None, probe))
+    order = list(SERVICE_IMPACT)
+
+    def rank(row):
+        name = row["service"]
+        return (not row["down"], order.index(name) if name in order else len(order), name)
+
+    rows.sort(key=rank)
+    return rows
+
+
+def _service_row(app, pod, probe):
+    reasons = []
+    container_ready = None if pod is None else pod.get("ready") == "Ready"
+    if pod is not None and not container_ready:
+        reasons.append(f"container {pod.get('phase', 'not ready')}")
+    probe_ok = None if probe is None else bool(probe.get("ok"))
+    if probe is not None and not probe_ok:
+        reasons.append(f"health check: {probe.get('detail')}")
+    infra = app in INFRA_SERVICES
+    down = bool(reasons) and not infra
+    pages = SERVICE_IMPACT.get(app)
+    return {
+        "service": app,
+        "container": None if pod is None else pod.get("name"),
+        "state": None if pod is None else pod.get("phase"),
+        "container_ready": container_ready,
+        "health_check": None if probe is None else probe.get("detail"),
+        "health_ok": probe_ok,
+        "health_latency_ms": None if probe is None else probe.get("latency_ms"),
+        "pages": pages if pages is not None else [],
+        "visible_to_page_probes": bool(pages and any(p != "Checkout" for p in pages)),
+        "impact_note": SERVICE_IMPACT_NOTE.get(app, ""),
+        "infrastructure": infra,
+        "down": down,
+        "reason": "; ".join(reasons),
+    }
+
+
 # ---------------- Kubernetes backend (original behaviour) ----------------
 def run_kubectl(args, timeout=10):
     return _run(["kubectl"] + args, timeout=timeout)
@@ -556,9 +815,174 @@ def restart_frontend(backend, namespace="default", project=""):
     return restart_frontend_container(project) if backend == "docker" else restart_one_frontend_pod(namespace)
 
 
+# ---------------- Live sampling on background threads ----------------
+class JourneyRunner:
+    """Runs CheckoutJourney.tick() on its own thread. A checkout can take up to ~18 s when a
+    dependency hangs; on its own thread that never delays a sample."""
+
+    def __init__(self, journey, interval=2.0):
+        self.journey, self.interval = journey, interval
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._row = None
+        self._thread = None
+
+    def start(self):
+        if self._thread is None and self.journey.enabled:
+            self._thread = threading.Thread(target=self._loop, name="checkout-journey", daemon=True)
+            self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                row = self.journey.tick()
+                with self._lock:
+                    self._row = row
+            except Exception:  # never let a probe bug kill the thread
+                pass
+            self._stop.wait(self.interval)
+
+    def latest_row(self):
+        with self._lock:
+            row = None if self._row is None else dict(self._row)
+        if row is not None and self.journey._last_at:
+            row["age_s"] = round(time.time() - self.journey._last_at, 1)
+        return row
+
+
+class LiveSampler:
+    """Takes one telemetry sample every `interval` seconds on a background thread.
+
+    The dashboard only reads `latest()` and `history()`, so a page refresh is instant even while a
+    stopped service makes the probes slow. (Doing the probes inside each refresh let a slow sample
+    overrun the next refresh: Streamlit then abandons the half-drawn page, which shows as the whole
+    dashboard greying out and the lower sections never appearing.)"""
+
+    def __init__(self, base_url, backend="docker", namespace="default", project="", interval=2.0,
+                 journey_every=JOURNEY_EVERY, write=False, sla_ms=LATENCY_SLA_MS, on_sample=None):
+        self.key = (base_url, backend, namespace, project)
+        self.base_url, self.backend, self.namespace, self.project = base_url, backend, namespace, project
+        self.interval = interval
+        self.write, self.sla_ms, self.on_sample = write, sla_ms, on_sample
+        self.simulate_until = 0.0
+        self.journey = CheckoutJourney(base_url, every=journey_every)
+        self.journey_runner = JourneyRunner(self.journey, interval)
+        self.extras = DockerExtrasSampler() if backend == "docker" else None
+        self.health = ServiceProbeSampler(interval=interval)
+        self.last_error = None
+        self._history = deque(maxlen=HISTORY_SIZE)
+        self._latest = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._first = threading.Event()
+        self._thread = None
+
+    def start_helpers(self):
+        self.health.start()
+        if self.extras:
+            self.extras.start()
+        return self
+
+    def start(self):
+        self.start_helpers()
+        self.journey_runner.start()
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._loop, name="live-sampler", daemon=True)
+            self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        self.journey_runner.stop()
+        self.health.stop()
+        if self.extras:
+            self.extras.stop()
+
+    @property
+    def simulating(self):
+        return time.time() < self.simulate_until
+
+    def collect_once(self, sync_journey=False):
+        started = time.time()
+        simulate = self.simulating
+        rows = probe_endpoints(self.base_url, simulate_failure=simulate)
+        jrow = self.journey.tick() if sync_journey else self.journey_runner.latest_row()
+        if jrow:
+            rows.append(jrow)
+        snap = get_snapshot(self.backend, self.namespace, self.project)
+        extras = None
+        if self.extras:
+            extras = self.extras.latest()
+            names = {p["name"] for p in snap["pods"]}
+            resources = {n: r for n, r in extras["resources"].items() if n in names}
+            snap["cpu_memory"] = format_resources(resources)
+            snap["events"] = [f"{e['time'][11:19]}  {e['action']:<22} {e['container']}"
+                              + (f" exitCode={e['exit_code']}" if e["exit_code"] not in (None, 0) else "")
+                              for e in extras["events"] if e["container"] in names][-8:]
+        sample = build_sample(rows, snap, simulated=simulate, extras=extras,
+                              journey_info=self.journey.info(), service_probes=self.health.latest())
+        write_error = write_telemetry(sample, self.sla_ms) if self.write else None
+        bundle = {"sample": sample, "probe_rows": rows, "snap": snap, "write_error": write_error,
+                  "collected_at": time.time(), "cycle_s": round(time.time() - started, 2)}
+        with self._lock:
+            self._history.append(sample)
+            self._latest = bundle
+        self._first.set()
+        if self.on_sample:
+            self.on_sample(bundle)
+        return bundle
+
+    def _loop(self):
+        while not self._stop.is_set():
+            started = time.time()
+            try:
+                self.collect_once()
+                self.last_error = None
+            except Exception as exc:  # keep sampling; surface the problem instead
+                self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+            self._stop.wait(max(0.2, self.interval - (time.time() - started)))
+
+    def wait_for_first(self, timeout=8.0):
+        return self._first.wait(timeout)
+
+    def latest(self):
+        """The newest bundle (sample, probe_rows, snap, write_error, collected_at, cycle_s, age_s)."""
+        with self._lock:
+            bundle = None if self._latest is None else dict(self._latest)
+        if bundle is not None:
+            bundle["age_s"] = round(time.time() - bundle["collected_at"], 1)
+        return bundle
+
+    def history(self):
+        with self._lock:
+            return list(self._history)
+
+
+_SHARED_LOCK = threading.Lock()
+_SHARED = None
+
+
+def shared_live_sampler(base_url, backend="docker", namespace="default", project="", interval=2.0):
+    """One sampler per process (module globals survive Streamlit reruns). Changing the settings
+    stops the old sampler and starts a new one."""
+    global _SHARED
+    with _SHARED_LOCK:
+        key = (base_url, backend, namespace, project)
+        if _SHARED is None or _SHARED.key != key or _SHARED.interval != interval:
+            if _SHARED is not None:
+                _SHARED.stop()
+            _SHARED = LiveSampler(base_url, backend, namespace, project, interval=interval).start()
+        return _SHARED
+
+
 # ---------------- Telemetry ----------------
-def build_sample(probe_rows, snap, simulated=False, extras=None, journey_info=None):
-    """One telemetry record. `extras` is DockerExtrasSampler.latest(); `journey_info` is CheckoutJourney.info()."""
+def build_sample(probe_rows, snap, simulated=False, extras=None, journey_info=None, service_probes=None):
+    """One telemetry record. `extras` is DockerExtrasSampler.latest(); `journey_info` is
+    CheckoutJourney.info(); `service_probes` is ServiceProbeSampler.latest()."""
     n = len(probe_rows)
     successful = sum(r["success"] for r in probe_rows)
     lats = [r["latency_ms"] for r in probe_rows]
@@ -588,6 +1012,8 @@ def build_sample(probe_rows, snap, simulated=False, extras=None, journey_info=No
         "restart_count": snap["restarts"],
         "not_ready": [p["name"] for p in snap["pods"] if p["ready"] != "Ready"],
     }
+    services = service_status(snap, service_probes)
+    summary["services_down"] = [r["service"] for r in services if r["down"]]
     with_cpu = [w for w in workloads if w.get("cpu_pct") is not None]
     if with_cpu:
         top_cpu = max(with_cpu, key=lambda w: w["cpu_pct"])
@@ -602,6 +1028,7 @@ def build_sample(probe_rows, snap, simulated=False, extras=None, journey_info=No
         "metrics": metrics,
         "summary": summary,
         "workloads": workloads,
+        "services": services,
         "recent_events": [e for e in (extras.get("events") or []) if not names or e["container"] in names],
         "resources_age_s": extras.get("age_s"),
     }
@@ -611,8 +1038,11 @@ def build_sample(probe_rows, snap, simulated=False, extras=None, journey_info=No
 
 
 def is_breach(sample, sla_ms=LATENCY_SLA_MS):
+    """Probe errors, a latency SLA breach, or any application service down (by container state
+    or direct health check). The last one matters because several services - ads,
+    recommendations, email - can fail without a single page probe noticing."""
     s = sample["summary"]
-    return s["error_rate_pct"] > 0 or s["p95_latency_ms"] > sla_ms
+    return s["error_rate_pct"] > 0 or s["p95_latency_ms"] > sla_ms or bool(s.get("services_down"))
 
 
 def _atomic_write(path, text):

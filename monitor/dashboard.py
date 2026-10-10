@@ -1,22 +1,22 @@
 import json
 import os
 import time
-from collections import deque
 
 import pandas as pd
 import streamlit as st
 
+import altair as alt
+
 import boutique_core as core
+import service_graphs as graphs
 
 # ---------------- Page / state ----------------
 st.set_page_config(page_title="Boutique Chaos & Health", page_icon="🛡️", layout="wide")
 
-if "history" not in st.session_state:
-    st.session_state.history = deque(maxlen=core.HISTORY_SIZE)
-if "probe_failure_simulation_until" not in st.session_state:
-    st.session_state.probe_failure_simulation_until = 0.0
 if "action_message" not in st.session_state:
     st.session_state.action_message = None
+if "service_graphs" not in st.session_state:
+    st.session_state.service_graphs = graphs.new_state()
 
 st.title("🛡️ Online Boutique — Live Health & Chaos Dashboard")
 st.caption("Live HTTP probes, container/pod health, bounded test actions, and telemetry for your AI chaos-engineering agent.")
@@ -59,46 +59,42 @@ except ImportError:
         st.rerun()
 
 
-@st.cache_resource
-def docker_sampler():
-    """`docker stats` / `docker events` are slow, so one background thread refreshes them every 10 s."""
-    return core.DockerExtrasSampler().start()
-
-
 # ---------------- Collect ----------------
-now = time.time()
-simulate = now < st.session_state.probe_failure_simulation_until
-probe_rows = core.probe_endpoints(base_url, simulate_failure=simulate)
-journey = st.session_state.get("journey")
-if journey is None or journey.base != base_url:
-    journey = st.session_state.journey = core.CheckoutJourney(base_url)
-journey_row = journey.tick()
-if journey_row:
-    probe_rows.append(journey_row)
-snap = core.get_snapshot(backend, namespace, project)
-extras = None
-if backend == "docker":
-    extras = docker_sampler().latest()
-    names = {p["name"] for p in snap["pods"]}
-    snap["cpu_memory"] = core.format_resources({n: r for n, r in extras["resources"].items() if n in names})
-    snap["events"] = [f"{e['time'][11:19]}  {e['action']:<22} {e['container']}"
-                      + (f" exitCode={e['exit_code']}" if e["exit_code"] not in (None, 0) else "")
-                      for e in extras["events"] if e["container"] in names][-8:]
+# All probing runs on background threads (core.LiveSampler); this script only reads the newest
+# sample, so every refresh finishes immediately even while a stopped service makes probes slow.
+live = core.shared_live_sampler(base_url, backend, namespace, project, interval=float(refresh_seconds))
+live.write, live.sla_ms = write_telemetry_on, latency_sla
+if live.latest() is None:
+    live.wait_for_first(timeout=8)
+bundle = live.latest()
+if bundle is None:
+    st.info("Collecting the first sample…"
+            + (f" (last error: {live.last_error})" if live.last_error else ""))
+    st.stop()
 
-sample = core.build_sample(probe_rows, snap, simulated=simulate, extras=extras, journey_info=journey.info())
-st.session_state.history.append(sample)
-write_error = core.write_telemetry(sample, latency_sla) if write_telemetry_on else None
+sample, probe_rows, snap = bundle["sample"], bundle["probe_rows"], bundle["snap"]
+write_error = bundle["write_error"]
+history = live.history()
+simulate = live.simulating
+journey = live.journey
 
 summary = sample["summary"]
 error_rate = summary["error_rate_pct"]
 p95_latency = summary["p95_latency_ms"]
 mean_latency = summary["mean_latency_ms"]
 unit = "containers" if backend == "docker" else "pods"
+services_down = summary.get("services_down") or []
 
 # ---------------- Overview ----------------
 st.subheader("Live overview")
+if services_down:
+    st.error(f"🚨 SERVICE DOWN — {', '.join(services_down)}. "
+             "See *Service health* below for what users notice.")
 if error_rate > 0 or p95_latency > latency_sla:
     st.error("🚨 HEALTH DEGRADED — HTTP probe failures or latency SLA breach detected.")
+elif services_down:
+    st.warning("⚠️ Page probes still pass, but at least one service is down "
+               "(a failure behind the frontend).")
 elif p95_latency >= latency_warn:
     st.warning("⚠️ WARNING — Latency is above the warning threshold.")
 else:
@@ -117,11 +113,156 @@ c5.metric("Container restarts" if backend == "docker" else "Pod restarts", str(s
 
 st.caption(f"Last sample: {sample['timestamp']} · Refresh target: every {refresh_seconds}s · "
            f"Probe targets: {len(core.ENDPOINT_PATHS)} · Backend: {backend}"
-           + (f" · Compose project: {snap.get('project') or 'all containers'}" if backend == "docker" else ""))
+           + (f" · Compose project: {snap.get('project') or 'all containers'}"
+              if backend == "docker" else "")
+           + f" · Sample age: {bundle['age_s']:.0f}s (took {bundle['cycle_s']:.1f}s)")
+if bundle["age_s"] > max(6, 3 * refresh_seconds):
+    st.warning(f"The newest sample is {bundle['age_s']:.0f}s old: probing is slow right now "
+               "(a hung dependency makes page probes wait for their timeout). The page keeps updating.")
+if live.last_error:
+    st.warning(f"Sampler error: {live.last_error}")
+journey_info = journey.info()
+if journey_info["status"] == "unverified":
+    st.warning("Checkout probe is not working yet, so checkoutservice and paymentservice are covered only by "
+               f"their container state and health check. Retrying every {core.JOURNEY_RETRY_EVERY} samples. "
+               f"Last failure: {journey_info['last_error'] or 'none yet'}")
+elif journey_info["status"] == "off":
+    st.caption(f"Checkout probe off ({journey_info['disabled_reason']}).")
+if not live.health.latest() and core.SERVICE_PROBES_ON:
+    st.caption("Direct service health checks are starting (or every check failed to run); "
+               "container state is still used.")
 if simulate:
     st.warning("Probe-failure simulation is active. Samples are written with `simulated: true`; the application is not modified.")
 if write_error:
     st.warning(f"Could not write telemetry files: {write_error}")
+
+# ---------------- Service health ----------------
+st.divider()
+st.subheader("Service health")
+st.caption("Every service, including the ones no page probe can see. *Down* = container not ready or "
+           "the direct health check (gRPC health / Redis PING on the published port) failed. "
+           "*Visible on* = which probes fail when it is down.")
+
+
+def _status_label(r):
+    if r["infrastructure"]:
+        return "Infra (ignored)" if r["reason"] else "Infra"
+    return "DOWN" if r["down"] else "Up"
+
+
+def _yes_no(value):
+    return "—" if value is None else ("Yes" if value else "No")
+
+
+def _latency_label(r):
+    ms = r.get("health_latency_ms")
+    return None if ms is None else round(float(ms), 1)
+
+
+def _read_experiment():
+    journal = core.OUT_DIR / "active_experiment.json"
+    try:
+        return json.loads(journal.read_text(encoding="utf-8")) if journal.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+# Fixed row order (not "down first"): a click is reported as a row number, so the order must not
+# change between refreshes or the wrong service would open.
+_order = list(core.SERVICE_IMPACT)
+service_rows = sorted(sample.get("services") or [],
+                      key=lambda r: (_order.index(r["service"]) if r["service"] in _order else len(_order),
+                                     r["service"]))
+attacked = graphs.attacked_services(sample, _read_experiment(), known=_order)
+graph_state = st.session_state.service_graphs
+
+if service_rows:
+    service_df = pd.DataFrame([
+        {
+            "Service": r["service"],
+            "Status": ("UNDER ATTACK" if r["service"] in attacked and not r["down"] else _status_label(r)),
+            "Latency (ms)": _latency_label(r),
+            "Container": r["state"] or "—",
+            "Container ready": _yes_no(r["container_ready"]),
+            "Health check": r["health_check"] or "—",
+            "Visible on": ", ".join(r["pages"]) or "no page probe",
+            "Note": r["impact_note"] or "—",
+            "Why down": r["reason"] or "—",
+        }
+        for r in service_rows
+    ])
+    st.caption("Click a row to open that service's latency graph. Latency is the direct health-check "
+               "round trip; a hung or paused service climbs to the "
+               f"{core.SERVICE_PROBE_TIMEOUT_S:.0f} s timeout.")
+    event = st.dataframe(
+        service_df.style.map(
+            lambda v: "color: #b91c1c; font-weight: bold" if v in ("DOWN", "UNDER ATTACK") else (
+                "color: #15803d; font-weight: bold" if v == "Up" else ""),
+            subset=["Status"],
+        ).format({"Latency (ms)": lambda v: "—" if pd.isna(v) else f"{v:.1f}"}),
+        width="stretch",
+        hide_index=True,
+        key="service_table",
+        on_select="rerun",
+        selection_mode="multi-row",
+    )
+    selected_rows = getattr(getattr(event, "selection", None), "rows", None) or []
+    selection = {service_df.iloc[i]["Service"] for i in selected_rows if i < len(service_df)}
+else:
+    selection = set()
+    st.info("No service data yet (Docker unavailable and health checks not reporting).")
+
+graphs.update(graph_state, attacked, selection, time.time())
+
+
+def _latency_chart(rows):
+    df = pd.DataFrame(rows)
+    df["latency_ms"] = pd.to_numeric(df["latency_ms"], errors="coerce")
+    base = alt.Chart(df).encode(x=alt.X("time:T", title=None, axis=alt.Axis(format="%H:%M:%S")))
+    line = base.mark_line(color="#2563eb").encode(
+        y=alt.Y("latency_ms:Q", title="Health-check latency (ms)"))
+    points = base.mark_circle(size=60).encode(
+        y="latency_ms:Q",
+        color=alt.Color("status:N", scale=alt.Scale(domain=["Up", "Down"], range=["#2563eb", "#b91c1c"]),
+                        legend=alt.Legend(title=None, orient="top")),
+        tooltip=[alt.Tooltip("time:T", format="%H:%M:%S"), alt.Tooltip("latency_ms:Q", format=".1f"),
+                 "status:N", "detail:N"],
+    )
+    return (line + points).properties(height=220)
+
+
+open_graphs = graphs.ordered(graph_state, attacked, _order)
+if open_graphs:
+    st.markdown("#### Service latency")
+    if any(graph_state["open"][s]["source"] == "auto" for s in open_graphs):
+        st.caption(f"Opened automatically when a service is attacked; closes "
+                   f"{graphs.AUTO_CLOSE_AFTER_S:.0f} s after it recovers. "
+                   "Graphs you open by clicking stay until you close them.")
+    cols = st.columns(2)
+    for i, svc in enumerate(open_graphs):
+        info = graph_state["open"][svc]
+        rows = graphs.latency_rows(history, svc)
+        with cols[i % 2].container(border=True):
+            head, btn = st.columns([5, 1])
+            if svc in attacked:
+                state_txt = "🔴 under attack"
+            elif info["source"] == "auto" and info["last_bad"]:
+                left = max(0, graphs.AUTO_CLOSE_AFTER_S - (time.time() - info["last_bad"]))
+                state_txt = f"🟢 recovered, closing in {left:.0f}s"
+            else:
+                state_txt = "🟢 up"
+            head.markdown(f"**{svc}** · {state_txt}")
+            if btn.button("✕", key=f"close_graph_{svc}", help="Close this graph"):
+                graphs.close(graph_state, svc, attacked)
+                st.rerun()
+            if rows:
+                st.altair_chart(_latency_chart(rows), width="stretch")
+                last = rows[-1]
+                latency = "—" if last["latency_ms"] is None else f"{last['latency_ms']:.1f} ms"
+                st.caption(f"Latest: {latency} · {last['status']}"
+                           + (f" · {last['detail']}" if last["status"] == "Down" else ""))
+            else:
+                st.info("No latency samples yet for this service.")
 
 # ---------------- Actions ----------------
 st.divider()
@@ -171,7 +312,7 @@ with a3:
     st.markdown("### 🚦 Test alerting pipeline")
     st.write("Simulates failed probes for 15 seconds to verify red status, telemetry and breach flag. Does not affect the app.")
     if st.button("Simulate probe failure", width="stretch"):
-        st.session_state.probe_failure_simulation_until = time.time() + 15
+        live.simulate_until = time.time() + 15
         st.session_state.action_message = ("warning", "Probe-failure simulation enabled for 15 seconds. Confirm the dashboard turns red and SLA_BREACH.flag is written.")
 
 if st.session_state.action_message:
@@ -229,7 +370,7 @@ with left:
     st.subheader("Latency trend")
     chart_rows = [
         {"Time": item["timestamp"], "Endpoint": endpoint, "Latency (ms)": val["latency"]}
-        for item in st.session_state.history for endpoint, val in item["metrics"].items()
+        for item in history for endpoint, val in item["metrics"].items()
     ]
     if chart_rows:
         st.line_chart(pd.DataFrame(chart_rows).pivot_table(index="Time", columns="Endpoint", values="Latency (ms)", aggfunc="mean"))

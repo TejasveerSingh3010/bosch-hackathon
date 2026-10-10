@@ -112,7 +112,18 @@ Each sample has:
 - `summary`: error rate, mean and p95 latency, ready/total, restart count, and the hottest container's CPU and memory.
 - `workloads`: per container, state, restarts, uptime, exit code (137 means killed), OOM, and resource use.
 - `recent_events`: Docker lifecycle events from the last 2 minutes (`die`, `kill`, `stop`, `pause`, `oom`, ...), so the failure time is known independently of the probes.
-- `journey`: the synthetic checkout. It runs every 5 samples (add to cart, then place an order with the app's mock card) and is the only probe that touches checkout, payment, shipping, email, and currency. It turns itself off if it has never succeeded, so it cannot cause a permanent false alarm.
+- `services`: one row per service with its container state, a direct health check (gRPC `grpc.health.v1` Check, or Redis `PING`, on the host ports published in `app/docker-compose.yml`), and which page probes fail when it is down. `summary.services_down` lists every application service that is down by either signal. This is what catches failures no page probe can see: `adservice` and `recommendationservice` (the frontend hides them), `emailservice` (checkout only logs a failed email), and `checkoutservice` / `paymentservice` while the checkout probe is not working. A paused container counts as down.
+- `journey`: the synthetic checkout. It runs every 5 samples (add to cart, then place an order with the app's mock card). Until it has succeeded once it is kept out of the error rate, so it cannot cause a false alarm, but it keeps retrying every 30 samples and `journey.last_error` says why it fails.
+
+`SLA_BREACH.flag` is written when a probe fails, p95 is over the SLA, or any application service is down. `loadgenerator` is shown but never counts as an outage.
+
+| Service | Page probes that fail when it is down |
+|---|---|
+| frontend, cartservice, redis-cart, currencyservice | Home, Product, Cart, Checkout |
+| productcatalogservice | Home, Product, Checkout |
+| shippingservice | Cart (the cart page always asks for a shipping quote), Checkout |
+| checkoutservice, paymentservice | Checkout only |
+| emailservice, adservice, recommendationservice | none: only the service health check sees them |
 
 CPU and memory come from a background `docker stats` every 10 seconds, so those numbers can be up to 10 seconds old.
 
@@ -127,6 +138,9 @@ CPU and memory come from a background `docker stats` every 10 seconds, so those 
 | `BOUTIQUE_TELEMETRY_DIR` | `results/` | Where telemetry and the breach flag are written |
 | `BOUTIQUE_DASHBOARD_WRITES` | `1` | `0` stops the dashboard writing telemetry. `scripts\monitor.bat` sets this |
 | `BOUTIQUE_JOURNEY_EVERY` | `5` | Synthetic checkout every N samples (`0` turns it off) |
+| `BOUTIQUE_JOURNEY_RETRY_EVERY` | `30` | While the checkout probe has never worked, retry it every N samples |
+| `BOUTIQUE_SERVICE_PROBES` | `1` | `0` turns off the direct per-service health checks |
+| `BOUTIQUE_SERVICE_HOST` / `BOUTIQUE_SERVICE_PROBE_TIMEOUT` | `127.0.0.1` / `1.0` | Where the published service ports are, and the per-check timeout in seconds |
 | `BOUTIQUE_BURST_MAX_SECONDS` / `_MAX_REQUESTS` / `_MAX_WORKERS` | `600` / `20000` / `20` | Caps for the dashboard traffic burst |
 
 The supported target is this repo's Compose stack. The Kubernetes backend only changes where the monitor reads pod health.

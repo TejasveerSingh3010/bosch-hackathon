@@ -64,6 +64,9 @@ services:
     environment:
       PORT: "50051"
       DISABLE_PROFILER: "1"
+    # Host port only for the monitor's direct health check (50051 is taken by paymentservice).
+    ports:
+      - "127.0.0.1:50052:50051"
 
   emailservice:
     image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/emailservice:v0.10.7
@@ -71,6 +74,9 @@ services:
     environment:
       PORT: "8080"
       DISABLE_PROFILER: "1"
+    # Host port only for the monitor's direct health check (8080 is the frontend).
+    ports:
+      - "127.0.0.1:8081:8080"
 
   checkoutservice:
     image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/checkoutservice:v0.10.7
@@ -102,6 +108,9 @@ services:
       DISABLE_PROFILER: "1"
     depends_on:
       - productcatalogservice
+    # Host port only for the monitor's direct health check (8080 is the frontend).
+    ports:
+      - "127.0.0.1:8082:8080"
 
   adservice:
     image: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo/adservice:v0.10.7
