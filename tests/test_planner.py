@@ -295,3 +295,100 @@ def _audit_events(results_dir: Path) -> list[str]:
 def _only_plan_id(results_dir: Path) -> str:
     plans = list((results_dir / "plans" / "test").glob("*.plan.json"))
     return plans[0].stem.replace(".plan", "")
+
+
+# --------------------------------------------------------------------------- the deadliest-attacks ranking
+from planner import ranking  # noqa: E402
+from planner.agent import PLANNER_MODEL, AttackParams, Selection  # noqa: E402
+from planner.ranking import RankedAttack, Ranking, clean, deterministic, rank_deadliest, write_ranking  # noqa: E402
+from tests.conftest import make_sample  # noqa: E402
+
+SERVICES = ["frontend", "cartservice", "currencyservice", "adservice", "shippingservice"]
+BLAST = {"cartservice": 4, "currencyservice": 4, "shippingservice": 1}
+
+
+def test_ranking_is_one_attack_per_target_with_the_frontend_deadliest():
+    ranked = deterministic(SERVICES, BLAST, 5, {}, limit=5)
+    assert ranked[0].target == "frontend" and ranked[0].action == "network_partition"
+    assert len({r.target for r in ranked}) == len(ranked) == 5
+    assert [r.deadliness for r in ranked] == sorted((r.deadliness for r in ranked), reverse=True)
+    assert all(r.action in CATALOGUE and r.action not in ("kill", "pause", "stop") for r in ranked)
+
+
+def test_ranking_follows_current_health():
+    healthy = {r.target: r for r in deterministic(SERVICES, BLAST, 5, {}, limit=5)}
+    health = {
+        "cartservice": {"down": True, "reason": "health check: gRPC deadline exceeded"},
+        "adservice": {"down": False, "mem_mb": 195.0},  # a 128 MiB cap would OOM-kill it
+    }
+    now = {r.target: r for r in deterministic(SERVICES, BLAST, 5, health, limit=5)}
+    assert now["cartservice"].deadliness < healthy["cartservice"].deadliness  # already down
+    assert "already down" in now["cartservice"].rationale
+    assert now["adservice"].action == "memory_limit"
+    assert now["adservice"].deadliness > healthy["adservice"].deadliness
+
+
+def test_a_model_answer_is_checked_like_a_plan():
+    fallback = deterministic(SERVICES, BLAST, 5, {}, limit=5)
+    answer = Ranking(ranked=[
+        RankedAttack(action="meltdown", target="cartservice", deadliness=99, rationale="unknown attack"),
+        RankedAttack(action="network_delay", target="loadgenerator", deadliness=99, rationale="not allowed"),
+        RankedAttack(action="pause", target="adservice", deadliness=99, rationale="excluded fault"),
+        RankedAttack(action="throttle", target="cartservice", params=AttackParams(cpus=99),
+                     deadliness=150, rationale="bad params"),
+        RankedAttack(action="flapping", target="cartservice", deadliness=90, rationale="duplicate target"),
+    ])
+    out = clean(answer, SERVICES, fallback, limit=5)
+    assert len(out) == 5 and len({r.target for r in out}) == 5
+    cart = next(r for r in out if r.target == "cartservice")
+    assert cart.action == "throttle" and cart.deadliness == 100  # clamped
+    assert cart.params.cpus == 0.1  # invalid params replaced by the catalogue default
+    assert all(r.action in ranking.RANKABLE and r.target in SERVICES for r in out)
+
+
+def test_strict_schemas_have_no_free_form_objects():
+    """Groq's strict mode refuses an object without fixed properties (it 400'd on `params: dict`)."""
+    from remediation.agent import wire_schema
+
+    def objects(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield node
+            for value in node.values():
+                yield from objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from objects(value)
+
+    for shape in (Ranking, Selection):
+        _, wire = wire_schema(shape, "")
+        for node in objects(wire):
+            assert "properties" in node and node["additionalProperties"] is False
+
+
+def test_rank_deadliest_reads_per_service_health_and_writes_the_board(
+        config, docker, results_dir, write_telemetry, monkeypatch):
+    sample = make_sample()
+    sample["services"] = [{"service": "cartservice", "down": True, "reason": "stopped"},
+                          {"service": "adservice", "down": False},
+                          {"service": "loadgenerator", "down": False, "infrastructure": True}]
+    sample["workloads"] = [{"app": "adservice", "cpu_pct": 1.0, "mem_mb": 195.0, "mem_pct": 2.5}]
+    write_telemetry(samples=[sample])
+    tools = ToolInterface(config, docker, auditor(results_dir), approver=DenyAll())
+    health = tools.get_cluster_health()["services"]
+    assert health["cartservice"]["down"] and "loadgenerator" not in health
+    assert health["adservice"]["mem_mb"] == 195.0
+
+    asked = []
+    real_get_client = ranking.get_client
+    monkeypatch.setattr(ranking, "get_client", lambda model=None: asked.append(model) or real_get_client())
+    doc = rank_deadliest(tools)
+    assert asked == [PLANNER_MODEL] == ["openai/gpt-oss-120b"]
+    assert doc["narrator"] == "stub" and len(doc["ranked"]) == 5
+    assert [item["rank"] for item in doc["ranked"]] == [1, 2, 3, 4, 5]
+    assert all(set(item) >= {"action", "target", "title", "params", "deadliness", "rationale"}
+               for item in doc["ranked"])
+    assert not docker.calls  # ranking never injects
+
+    path = write_ranking(doc, results_dir)
+    assert json.loads(path.read_text(encoding="utf-8"))["ranked"] == doc["ranked"]

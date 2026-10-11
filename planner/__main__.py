@@ -3,6 +3,8 @@
 python -m planner list                       the eight attacks and the services they may target
 python -m planner health                     the current cluster-health snapshot
 python -m planner details <attack>           one attack's hypothesis, parameters, recovery criteria
+python -m planner rank [--limit N]           the N (default 5) deadliest attacks given current health;
+                                             writes results/attack_ranking.json for the dashboard
 python -m planner run --goal "..."           plan and run experiments (asks y/N before each injection)
     --limit N            at most N experiments (default 3)
     --approve ID ...     pre-approve these experiment ids (non-interactive)
@@ -65,6 +67,27 @@ def cmd_details(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rank(args: argparse.Namespace) -> int:
+    from .ranking import rank_deadliest, write_ranking
+
+    if args.session is None:
+        args.session = "rankings"  # one audit folder for every ranking, not one per refresh
+    tools = _tools(args, approver_default=False)
+    doc = rank_deadliest(tools, limit=args.limit)
+    path = write_ranking(doc, Path(tools.config.results_dir))
+    safe = "" if doc["safe_to_inject"] else "  (cluster degraded or telemetry stale: not safe to inject now)"
+    print(f"Deadliest attacks right now, by {doc['narrator']}{safe}")
+    for item in doc["ranked"]:
+        params = f" {json.dumps(item['params'])}" if item["params"] else ""
+        head = f"  {item['rank']}. [{item['deadliness']:>3}] {item['action']:<18} {item['target']:<22}"
+        print(head + params)
+        print(f"       {item['rationale']}")
+    if doc.get("llm_error"):
+        print(f"  (model failed, deterministic ranking used: {doc['llm_error']})")
+    print(f"written {path}")
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     tools = _tools(args)
     planner = AttackPlanner(tools)
@@ -103,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
     p_details = sub.add_parser("details", help="one attack's details")
     p_details.add_argument("attack", help="attack name, e.g. memory_limit")
     p_details.set_defaults(func=cmd_details)
+
+    p_rank = sub.add_parser("rank", help="rank the deadliest attacks given current health")
+    p_rank.add_argument("--limit", type=int, default=5, help="how many to rank (default 5)")
+    p_rank.set_defaults(func=cmd_rank)
 
     p_run = sub.add_parser("run", help="plan and run experiments")
     p_run.add_argument("--goal", default="Find the most damaging failure the safety layer allows.")

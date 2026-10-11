@@ -44,6 +44,34 @@ def allowed_services(config: TargetConfig) -> list[str]:
     return services
 
 
+def service_snapshot(sample: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each service's current state from one telemetry sample, compact enough for a prompt.
+
+    Combines the monitor's per-service health (down, reason, health-check latency) with the
+    container's resource use. Services the monitor did not report are simply absent.
+    """
+    workloads = {w.get("app"): w for w in sample.get("workloads") or [] if w.get("app")}
+    out: dict[str, dict[str, Any]] = {}
+    for row in sample.get("services") or []:
+        name = row.get("service")
+        if not name or row.get("infrastructure"):
+            continue
+        w = workloads.get(name, {})
+        entry: dict[str, Any] = {"down": bool(row.get("down"))}
+        if row.get("down") and row.get("reason"):
+            entry["reason"] = row["reason"]
+        for key, src, value in (("health_ms", row, "health_latency_ms"), ("cpu_pct", w, "cpu_pct"),
+                                ("mem_mb", w, "mem_mb"), ("mem_pct", w, "mem_pct")):
+            if src.get(value) is not None:
+                entry[key] = src[value]
+        if w.get("restarts"):
+            entry["restarts"] = w["restarts"]
+        if w.get("oom_killed"):
+            entry["oom_killed"] = True
+        out[name] = entry
+    return out
+
+
 @dataclass
 class ToolResult:
     """What an injection tool returns: one of ran / rejected / not_approved / error."""
@@ -132,6 +160,8 @@ class ToolInterface:
             "p95_latency_ms": summary.get("p95_latency_ms"),
             "not_ready": list(summary.get("not_ready") or []),
             "ready": f"{summary.get('ready_pods')}/{summary.get('total_pods')}",
+            "services_down": list(summary.get("services_down") or []),
+            "services": service_snapshot(sample),
         }
 
     def get_experiment_results(self, experiment_id: str) -> dict[str, Any]:
@@ -262,4 +292,4 @@ class ToolInterface:
 INJECTION_TOOLS: tuple[str, ...] = tuple(f"inject_{name if name != 'throttle' else 'cpu_throttle'}"
                                          for name in ATTACK_NAMES)
 
-__all__ = ["INJECTION_TOOLS", "ToolInterface", "ToolResult", "allowed_services"]
+__all__ = ["INJECTION_TOOLS", "ToolInterface", "ToolResult", "allowed_services", "service_snapshot"]
