@@ -1,4 +1,4 @@
-"""The pipeline graph: attacker -> analyst -> remediation -> escalate.
+"""The pipeline graph: attacker -> reporter -> remediation -> escalate.
 
 START is always the attacker and the last node before END is always `escalate`, which writes the
 recommendation for human escalation. Every early exit (plan rejected, dry run, nothing found, an
@@ -16,7 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 from remediation.models import CodeProposal
 from remediation.store import Store
 
-from . import analyst, attacker, remediation, tracing
+from . import attacker, remediation, reporter, tracing
 from .deps import Deps
 from .framework import add_agent
 from .state import PipelineState
@@ -59,7 +59,7 @@ def escalation(state: PipelineState, store: Store) -> dict[str, Any]:
 
 def build_graph(deps: Deps) -> CompiledStateGraph:
     builder = StateGraph(PipelineState)
-    for spec in (attacker.spec(deps), analyst.spec(deps), remediation.spec(deps)):
+    for spec in (attacker.spec(deps), reporter.spec(deps), remediation.spec(deps)):
         add_agent(builder, spec)
     store = Store(deps.config.results_dir)
     builder.add_node("escalate", lambda state: {"escalation": escalation(state, store)})

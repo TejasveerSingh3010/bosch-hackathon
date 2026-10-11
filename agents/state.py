@@ -19,12 +19,12 @@ class PipelineState(TypedDict, total=False):
 
     # --- per-agent conversations (agent turns, tool calls, tool results)
     attacker_messages: Annotated[list[AnyMessage], add_messages]
-    analyst_messages: Annotated[list[AnyMessage], add_messages]
+    reporter_messages: Annotated[list[AnyMessage], add_messages]
     remediation_messages: Annotated[list[AnyMessage], add_messages]
 
     # --- handoffs
-    result_ids: list[str]  # attacker -> analyst: experiment records written to results/
-    findings: list[str]  # analyst -> remediation: the records worth a recommendation
+    result_ids: list[str]  # attacker -> reporter: experiment records written to results/
+    findings: list[str]  # reporter -> remediation: the reported records worth a recommendation
     proposal_ids: list[str]  # remediation -> escalation: what the human is asked to review
     notes: Annotated[list[str], operator.add]  # why a stage ended early, tool errors, ...
 

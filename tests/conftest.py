@@ -124,9 +124,13 @@ def config(results_dir: Path) -> TargetConfig:
 
 @pytest.fixture(autouse=True)
 def no_langfuse(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests never trace to a real Langfuse, whatever the shell or .env holds."""
+    """Tests never trace to a real Langfuse, whatever the shell or .env holds.
+
+    Set to "" rather than deleted: code that calls load_dotenv() (e.g. the reporter's get_client)
+    would otherwise reload the real keys from .env, since load_dotenv fills only *absent* vars.
+    """
     for key in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL", "LANGFUSE_HOST"):
-        monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv(key, "")
 
 
 @pytest.fixture(autouse=True)

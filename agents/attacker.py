@@ -84,7 +84,7 @@ def handoff(state: PipelineState, messages: list[AnyMessage]) -> dict[str, Any]:
 
 
 def route(state: PipelineState) -> str:
-    return "analyst" if state.get("result_ids") else "escalate"
+    return "reporter" if state.get("result_ids") else "escalate"
 
 
 def spec(deps: Deps) -> AgentSpec:
@@ -96,6 +96,6 @@ def spec(deps: Deps) -> AgentSpec:
         brief=brief,
         handoff=handoff,
         route=route,
-        destinations=("analyst", "escalate"),
+        destinations=("reporter", "escalate"),
         description="chooses and runs a failure experiment (stand-in: runs the given plan)",
     )

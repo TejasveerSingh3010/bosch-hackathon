@@ -49,6 +49,8 @@ def script(results_dir):
 
 @pytest.fixture
 def deps(docker, config, script):
+    from reporter.service import Reporter
+
     def make(draft=None, **kwargs):
         clock = FakeClock()
         return Deps(
@@ -57,6 +59,11 @@ def deps(docker, config, script):
             make_proposer=lambda: GroqProposer(client=groq_client(draft or make_draft())),
             build=None,
             make_runner=lambda d, c: build_runner(d, c, script, clock),
+            reports_dir=config.results_dir / "reports",  # separate from results/, as in production
+            # Agent 2 with the rule-based narrator (no key in tests) and no real docker-log capture.
+            make_reporter=lambda _deps: Reporter(
+                config.results_dir, reports_dir=config.results_dir / "reports",
+                project=config.compose_project, capture_container_logs=False),
             **kwargs,
         )
 
@@ -70,12 +77,12 @@ def test_the_graph_starts_at_the_attacker_and_ends_at_escalation(deps):
     edges = {(e.source, e.target) for e in graph.edges}
     assert {t for s, t in edges if s == "__start__"} == {"attacker"}
     assert {s for s, t in edges if t == "__end__"} == {"escalate"}
-    for agent in ("attacker", "analyst", "remediation"):
+    for agent in ("attacker", "reporter", "remediation"):
         # Own tools: agent <-> agent_tools, and out only through the handoff.
         assert {(agent, f"{agent}_tools"), (f"{agent}_tools", agent), (agent, f"{agent}_handoff")} <= edges
         assert {t for s, t in edges if s == agent} == {f"{agent}_tools", f"{agent}_handoff"}
-    assert {t for s, t in edges if s == "attacker_handoff"} == {"analyst", "escalate"}
-    assert {t for s, t in edges if s == "analyst_handoff"} == {"remediation", "escalate"}
+    assert {t for s, t in edges if s == "attacker_handoff"} == {"reporter", "escalate"}
+    assert {t for s, t in edges if s == "reporter_handoff"} == {"remediation", "escalate"}
     assert {t for s, t in edges if s == "remediation_handoff"} == {"escalate"}
 
 
@@ -96,7 +103,7 @@ def test_a_full_run_files_a_recommendation_and_escalates_it(deps, results_dir):
 
 def test_a_rejected_plan_skips_to_escalation(deps):
     final, _ = run_pipeline(deps(), {"plan": {**PLAN, "target": "loadgenerator"}, "notes": []})
-    assert not final.get("analyst_messages") and not final.get("remediation_messages")
+    assert not final.get("reporter_messages") and not final.get("remediation_messages")
     assert final["escalation"]["headline"] == "no recommendation was filed"
     assert any("attacker:" in n for n in final["escalation"]["notes"])
 
@@ -111,7 +118,7 @@ def test_a_dry_run_injects_nothing_and_still_escalates(deps, docker):
 def test_a_declined_config_fix_is_answered_with_code(deps, monkeypatch):
     asked = []
 
-    def fake_code(_proposer, config, declined_id, _build):
+    def fake_code(_proposer, config, declined_id, _build=None, **_kwargs):
         asked.append(declined_id)
         draft = make_code_draft(edits=[])
         proposal = CodeProposal(
@@ -191,8 +198,8 @@ def test_langfuse_gets_one_trace_with_tools_tokens_and_cost(deps, monkeypatch):
 
     assert len({s.context.trace_id for s in spans}) == 1
     names = {s.name for s in spans}
-    assert {"chaos-pipeline", "attacker", "analyst", "remediation", "escalate"} <= names
-    assert {"run_experiment", "read_experiment_record", "recommend_config_fix"} <= names
+    assert {"chaos-pipeline", "attacker", "reporter", "remediation", "escalate"} <= names
+    assert {"run_experiment", "write_report", "recommend_config_fix"} <= names
     assert all(s.attributes.get("session.id") == "sess-1" for s in spans)
 
     tool = next(s for s in spans if s.name == "run_experiment")

@@ -60,7 +60,8 @@ def make_tools(deps: Deps) -> list[BaseTool]:
         records, policy-check each and file it for human review. It may decline when only code can
         fix it."""
         try:
-            filed = recommend_config(deps.proposer, deps.config, deps.services(), result_ids)
+            filed = recommend_config(deps.proposer, deps.config, deps.services(), result_ids,
+                                     reports_dir=deps.reports_dir)
         except ProposalError as exc:
             return f"ERROR: {exc}", {"filed": [], "errors": [str(exc)]}
         return report(filed)
@@ -70,7 +71,8 @@ def make_tools(deps: Deps) -> list[BaseTool]:
         """Answer a declined configuration proposal with exact edits to the pinned upstream source,
         policy- and build-checked, filed for human review."""
         try:
-            filed = recommend_code(deps.proposer, deps.config, declined_id, deps.build)
+            filed = recommend_code(deps.proposer, deps.config, declined_id, deps.build,
+                                   reports_dir=deps.reports_dir)
         except (ProposalError, SourceError) as exc:
             return f"ERROR: {exc}", {"filed": [], "errors": [str(exc)]}
         return report(filed)
