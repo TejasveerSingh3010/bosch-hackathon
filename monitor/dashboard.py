@@ -14,55 +14,90 @@ import resilience
 import service_graphs as graphs
 
 # ---------------- Page / state ----------------
-st.set_page_config(page_title="Boutique Chaos & Health", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Dashboard", layout="wide")
 
 if "action_message" not in st.session_state:
     st.session_state.action_message = None
 if "service_graphs" not in st.session_state:
     st.session_state.service_graphs = graphs.new_state()
 
-st.title("🛡️ Online Boutique — Live Health & Chaos Dashboard")
-st.caption("Live HTTP probes, container/pod health, bounded test actions, and telemetry for your AI chaos-engineering agent.")
+st.title("Dashboard")
+
+# ---------------- Kill switch (sidebar) ----------------
+# The orchestrator writes the journal; the dashboard reads it, and writes STOP on request.
+STOP_FILE = core.OUT_DIR / "STOP"
+JOURNAL_FILE = core.OUT_DIR / "active_experiment.json"
+
+
+def _engage_stop():
+    try:
+        core.OUT_DIR.mkdir(parents=True, exist_ok=True)
+        STOP_FILE.write_text("stopped from the dashboard", encoding="utf-8")
+    except OSError as exc:
+        st.session_state.action_message = ("error", f"Could not write the stop file: {exc}")
+
+
+def _clear_stop():
+    try:
+        STOP_FILE.unlink(missing_ok=True)
+    except OSError as exc:
+        st.session_state.action_message = ("error", f"Could not clear the kill switch: {exc}")
+
+
+def _active_experiment():
+    """(action, container, experiment id, seconds in place) from the journal, or None."""
+    if not JOURNAL_FILE.exists():
+        return None
+    try:
+        entry = json.loads(JOURNAL_FILE.read_text(encoding="utf-8"))
+        held = max(0, int(time.time() - float(entry.get("injected_at", time.time()))))
+        return entry.get("action"), entry.get("container"), entry.get("experiment_id"), held
+    except (OSError, ValueError, TypeError):
+        return "unknown", "unknown", "unreadable journal", 0
+
 
 with st.sidebar:
-    st.header("Connection")
-    base_url = st.text_input("Boutique base URL", value=core.DEFAULT_BASE_URL).rstrip("/")
-    backend = st.selectbox(
-        "Runtime backend", ["docker", "kubernetes"],
-        index=0 if core.DEFAULT_BACKEND == "docker" else 1,
-        help="Where Online Boutique runs. Docker uses the docker CLI; Kubernetes uses kubectl.",
-    )
-    if backend == "docker":
-        project = st.text_input("Compose project (blank = auto-detect)", value=core.DEFAULT_COMPOSE_PROJECT).strip()
-        namespace = core.DEFAULT_NAMESPACE
+    st.header("KILL SWITCH")
+    if STOP_FILE.exists():
+        st.error("ENGAGED: a running experiment rolls back on its next check, and no new one can start.")
+        st.button("Clear the kill switch", width="stretch", on_click=_clear_stop)
     else:
-        namespace = st.text_input("Kubernetes namespace", value=core.DEFAULT_NAMESPACE)
-        project = ""
+        st.button("STOP the experiment", type="primary", width="stretch", on_click=_engage_stop)
+    _active = _active_experiment()
+    if _active:
+        st.warning(f"Injected now: **{_active[0]}** on **{_active[1]}** for {_active[3]}s "
+                   f"(`{_active[2]}`)")
+        st.caption("If this stays after the run ends, use scripts\\recover.bat.")
+    else:
+        st.caption("No experiment is injected.")
+    if st.session_state.action_message:
+        _level, _message = st.session_state.action_message
+        {"success": st.success, "error": st.error, "warning": st.warning}.get(_level, st.info)(_message)
+    st.divider()
+    st.header("CONNECTION")
+    base_url = st.text_input("Boutique base URL", value=core.DEFAULT_BASE_URL).rstrip("/")
     refresh_seconds = st.slider("Dashboard refresh (seconds)", 1, 10, 2)
     st.divider()
-    st.subheader("Thresholds")
+    st.subheader("THRESHOLDS")
     latency_warn = st.number_input("Latency warning (ms)", min_value=1, max_value=10000, value=core.LATENCY_WARN_MS)
     latency_sla = st.number_input("Latency SLA breach (ms)", min_value=1, max_value=30000, value=core.LATENCY_SLA_MS)
-    st.divider()
-    st.subheader("Telemetry")
-    write_telemetry_on = st.checkbox(
-        "Write telemetry.json / SLA_BREACH.flag from this tab",
-        value=os.getenv("BOUTIQUE_DASHBOARD_WRITES", "1") != "0",
-        help="Untick if headless_monitor.py is running, so only one process writes the files.",
-    )
-    st.caption(f"Files: {core.TELEMETRY_PATH.resolve()}")
-    st.caption("Actions are intended only for your own local/test environment.")
 
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=refresh_seconds * 1000, key="health_refresh")
+    if st.session_state.get("open_card") is None:
+        st_autorefresh(interval=refresh_seconds * 1000, key="health_refresh")
 except ImportError:
     st.info("For automatic refresh, install requirements.txt (includes streamlit-autorefresh). The Refresh now button still works.")
-    if st.button("↻ Refresh now"):
+    if st.button("Refresh now"):
         st.rerun()
 
 
 # ---------------- Collect ----------------
+# Runtime, Compose project and telemetry writing are not shown in the sidebar: they come from the
+# environment (BOUTIQUE_BACKEND / BOUTIQUE_COMPOSE_PROJECT / BOUTIQUE_NAMESPACE via boutique_core,
+# and BOUTIQUE_DASHBOARD_WRITES=0, which scripts\monitor.bat sets because the monitor writes telemetry).
+backend, project, namespace = core.DEFAULT_BACKEND, core.DEFAULT_COMPOSE_PROJECT, core.DEFAULT_NAMESPACE
+write_telemetry_on = os.getenv("BOUTIQUE_DASHBOARD_WRITES", "1") != "0"
 # All probing runs on background threads (core.LiveSampler); this script only reads the newest
 # sample, so every refresh finishes immediately even while a stopped service makes probes slow.
 live = core.shared_live_sampler(base_url, backend, namespace, project, interval=float(refresh_seconds))
@@ -78,7 +113,6 @@ if bundle is None:
 sample, probe_rows, snap = bundle["sample"], bundle["probe_rows"], bundle["snap"]
 write_error = bundle["write_error"]
 history = live.history()
-simulate = live.simulating
 journey = live.journey
 
 summary = sample["summary"]
@@ -89,19 +123,19 @@ unit = "containers" if backend == "docker" else "pods"
 services_down = summary.get("services_down") or []
 
 # ---------------- Overview ----------------
-st.subheader("Live overview")
+st.subheader("LIVE OVERVIEW")
 if services_down:
-    st.error(f"🚨 SERVICE DOWN — {', '.join(services_down)}. "
+    st.error(f"SERVICE DOWN — {', '.join(services_down)}. "
              "See *Service health* below for what users notice.")
 if error_rate > 0 or p95_latency > latency_sla:
-    st.error("🚨 HEALTH DEGRADED — HTTP probe failures or latency SLA breach detected.")
+    st.error("HEALTH DEGRADED — HTTP probe failures or latency SLA breach detected.")
 elif services_down:
-    st.warning("⚠️ Page probes still pass, but at least one service is down "
+    st.warning("Page probes still pass, but at least one service is down "
                "(a failure behind the frontend).")
 elif p95_latency >= latency_warn:
-    st.warning("⚠️ WARNING — Latency is above the warning threshold.")
+    st.warning("WARNING — Latency is above the warning threshold.")
 else:
-    st.success("🟢 PROBES HEALTHY — No probe errors or latency threshold breaches in this sample.")
+    st.success("PROBES HEALTHY — No probe errors or latency threshold breaches in this sample.")
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Probe success", f"{100-error_rate:.1f}%", delta=f"{-error_rate:.1f} pp errors" if error_rate else "No errors")
@@ -114,11 +148,6 @@ c4.metric(f"Ready {unit}", f"{snap['ready_pods']}/{snap['total_pods']}" if snap[
           delta=backend.capitalize() if snap["available"] else "Unavailable")
 c5.metric("Container restarts" if backend == "docker" else "Pod restarts", str(snap["restarts"]) if snap["available"] else "N/A")
 
-st.caption(f"Last sample: {sample['timestamp']} · Refresh target: every {refresh_seconds}s · "
-           f"Probe targets: {len(core.ENDPOINT_PATHS)} · Backend: {backend}"
-           + (f" · Compose project: {snap.get('project') or 'all containers'}"
-              if backend == "docker" else "")
-           + f" · Sample age: {bundle['age_s']:.0f}s (took {bundle['cycle_s']:.1f}s)")
 if bundle["age_s"] > max(6, 3 * refresh_seconds):
     st.warning(f"The newest sample is {bundle['age_s']:.0f}s old: probing is slow right now "
                "(a hung dependency makes page probes wait for their timeout). The page keeps updating.")
@@ -134,8 +163,6 @@ elif journey_info["status"] == "off":
 if not live.health.latest() and core.SERVICE_PROBES_ON:
     st.caption("Direct service health checks are starting (or every check failed to run); "
                "container state is still used.")
-if simulate:
-    st.warning("Probe-failure simulation is active. Samples are written with `simulated: true`; the application is not modified.")
 if write_error:
     st.warning(f"Could not write telemetry files: {write_error}")
 
@@ -149,7 +176,7 @@ def _resilience_inputs(log_path: str, results_dir: str):
 
 
 st.divider()
-st.subheader("🧮 Resilience score")
+st.subheader("RESILIENCE SCORE")
 _history, _experiments = _resilience_inputs(str(core.LOG_PATH), str(core.OUT_DIR))
 _res = resilience.compute(
     _history, _experiments, sample.get("services") or [], sample.get("workloads") or [],
@@ -163,34 +190,21 @@ else:
     s1, s2 = st.columns([1, 3])
     s1.metric("Overall", f"{_res['score']:.0f} / 100")
     s1.markdown(f"### :{_colour}[{_res['band']}]")
-    s1.caption("R = Σ wᵢ·sᵢ over the factors with data. "
-               + " · ".join(f"{label} {lo}+" for lo, label in resilience.BANDS[:-1]))
-    s2.dataframe(
+    s2.table(
         pd.DataFrame([
             {
                 "Factor": resilience.LABELS[key],
                 "Weight": (f"{f['effective_weight']:.0%}" if f["score"] is not None
                            else f"{f['weight']:.0%} (no data)"),
-                "Score": f["score"],
+                "Score": f"{f['score']:.0f} / 100" if f["score"] is not None else "no data",
                 "Evidence": f["evidence"],
             }
             for key, f in _res["factors"].items()
-        ]),
-        column_config={"Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f")},
-        width="stretch",
-        hide_index=True,
-    )
-    s2.caption(
-        "Measured, not declared: the telemetry log plus the newest result per (service, action) in "
-        f"results/ ({len(_res['experiments'])} experiments). Re-run an experiment after a fix and its new "
-        "result replaces the old one. Rules and weights: monitor/resilience.py. There is no universal "
-        "standard for this number."
-        + (f" No data yet for {', '.join(resilience.LABELS[k] for k in _res['missing'])}; "
-           "its weight is shared by the other factors." if _res["missing"] else "")
+        ]).set_index("Factor")
     )
 
 # ---------------- Service health ----------------
-# ---------------- Agent 2: failure report ----------------
+# ---------------- Failure report ----------------
 def _latest_report():
     """The newest report Agent 2 wrote (reports/latest.json + latest.md), or (None, None)."""
     reports_dir = Path(os.getenv("BOUTIQUE_REPORTS_DIR") or core.OUT_DIR.parent / "reports")
@@ -203,32 +217,32 @@ def _latest_report():
 
 
 st.divider()
-st.subheader("🧾 Failure report (Agent 2)")
+st.subheader("FAILURE REPORT")
 _report, _report_md = _latest_report()
 if _report is None:
-    st.caption("No failure report yet. Agent 2 writes one automatically after every experiment, and when it "
-               "sees a failure on its own (scripts\\monitor.bat starts its watcher). Try: python -m reporter demo")
+    st.caption("No failure report yet.")
 else:
     _analysis = _report["analysis"]
+    _when = (_analysis.get("origin") or {}).get("first_degraded_at") \
+        or (_report.get("evidence") or {}).get("window_start") or _report["generated_at"]
     try:
-        _age = max(0, int(time.time() - datetime.fromisoformat(_report["generated_at"]).timestamp()))
+        _at = datetime.fromisoformat(_when)
+        _ago = max(0, int(time.time() - _at.timestamp()))
+        _ago_text = (f"{_ago // 86400}d ago" if _ago >= 86400 else f"{_ago // 3600}h ago" if _ago >= 3600
+                     else f"{_ago // 60}m ago" if _ago >= 60 else f"{_ago}s ago")
+        _when_text = f"{_at.strftime('%Y-%m-%d %H:%M:%S')} ({_ago_text})"
     except ValueError:
-        _age = 0
+        _when_text = _when
     _previous = st.session_state.get("last_report_id")
     if _previous is not None and _previous != _report["id"]:
-        st.toast(f"New failure report: {_report['id']}", icon="🧾")
+        st.toast(f"New failure report: {_report['id']}")
     st.session_state.last_report_id = _report["id"]
-    _banner = f"**{_report['title']}** · {_age}s ago\n\n{_analysis['headline']}"
-    {"critical": st.error, "major": st.error, "minor": st.warning}.get(_analysis["severity"], st.success)(_banner)
-    st.markdown("**Where it failed:** " + _analysis["failure_point"])
-    with st.expander("Full report", expanded=_age < 300):
+    st.markdown(f"**Last failure:** {_when_text}  \n**What happened:** {_analysis['headline']}")
+    with st.expander("Full report"):
         st.markdown(_report_md)
 
 st.divider()
-st.subheader("Service health")
-st.caption("Every service, including the ones no page probe can see. *Down* = container not ready or "
-           "the direct health check (gRPC health / Redis PING on the published port) failed. "
-           "*Visible on* = which probes fail when it is down.")
+st.subheader("SERVICE HEALTH")
 
 
 def _status_label(r):
@@ -278,9 +292,6 @@ if service_rows:
         }
         for r in service_rows
     ])
-    st.caption("Click a row to open that service's latency graph. Latency is the direct health-check "
-               "round trip; a hung or paused service climbs to the "
-               f"{core.SERVICE_PROBE_TIMEOUT_S:.0f} s timeout.")
     event = st.dataframe(
         service_df.style.map(
             lambda v: "color: #b91c1c; font-weight: bold" if v in ("DOWN", "UNDER ATTACK") else (
@@ -320,11 +331,7 @@ def _latency_chart(rows):
 
 open_graphs = graphs.ordered(graph_state, attacked, _order)
 if open_graphs:
-    st.markdown("#### Service latency")
-    if any(graph_state["open"][s]["source"] == "auto" for s in open_graphs):
-        st.caption(f"Opened automatically when a service is attacked; closes "
-                   f"{graphs.AUTO_CLOSE_AFTER_S:.0f} s after it recovers. "
-                   "Graphs you open by clicking stay until you close them.")
+    st.markdown("#### SERVICE LATENCY")
     cols = st.columns(2)
     for i, svc in enumerate(open_graphs):
         info = graph_state["open"][svc]
@@ -332,14 +339,14 @@ if open_graphs:
         with cols[i % 2].container(border=True):
             head, btn = st.columns([5, 1])
             if svc in attacked:
-                state_txt = "🔴 under attack"
+                state_txt = "under attack"
             elif info["source"] == "auto" and info["last_bad"]:
                 left = max(0, graphs.AUTO_CLOSE_AFTER_S - (time.time() - info["last_bad"]))
-                state_txt = f"🟢 recovered, closing in {left:.0f}s"
+                state_txt = f"recovered, closing in {left:.0f}s"
             else:
-                state_txt = "🟢 up"
+                state_txt = "up"
             head.markdown(f"**{svc}** · {state_txt}")
-            if btn.button("✕", key=f"close_graph_{svc}", help="Close this graph"):
+            if btn.button("Close", key=f"close_graph_{svc}", help="Close this graph"):
                 graphs.close(graph_state, svc, attacked)
                 st.rerun()
             if rows:
@@ -481,54 +488,6 @@ with chaos_col:
 
 with rank_col:
     _attack_ranking_panel()
-
-if st.session_state.action_message:
-    level, message = st.session_state.action_message
-    {"success": st.success, "error": st.error, "warning": st.warning}.get(level, st.info)(message)
-
-# ---------------- Experiment state and kill switch ----------------
-# The orchestrator writes these files; the dashboard only reads them, and writes STOP on request.
-# That keeps the two processes independent: the dashboard can stop an experiment without being
-# able to start one.
-st.divider()
-e1, e2 = st.columns([1, 1.4])
-stop_file = core.OUT_DIR / "STOP"
-journal_file = core.OUT_DIR / "active_experiment.json"
-
-with e1:
-    st.subheader("🛑 Emergency stop")
-    if stop_file.exists():
-        st.error("Kill switch is ENGAGED. A running experiment will roll back on its next check.")
-        if st.button("Clear the kill switch", width="stretch"):
-            try:
-                stop_file.unlink(missing_ok=True)
-                st.rerun()
-            except OSError as exc:
-                st.session_state.action_message = ("error", f"Could not clear it: {exc}")
-    else:
-        st.write("Tells a running experiment to roll back immediately.")
-        if st.button("STOP the experiment", type="primary", width="stretch"):
-            try:
-                core.OUT_DIR.mkdir(parents=True, exist_ok=True)
-                stop_file.write_text("stopped from the dashboard", encoding="utf-8")
-                st.rerun()
-            except OSError as exc:
-                st.session_state.action_message = ("error", f"Could not write the stop file: {exc}")
-
-with e2:
-    st.subheader("🧪 Experiment in progress")
-    if journal_file.exists():
-        try:
-            entry = json.loads(journal_file.read_text(encoding="utf-8"))
-            held_for = max(0, int(time.time() - float(entry.get("injected_at", time.time()))))
-            st.warning(f"**{entry.get('action')}** on **{entry.get('container')}** "
-                       f"(experiment `{entry.get('experiment_id')}`), in place for {held_for}s")
-        except (OSError, ValueError, TypeError):
-            st.warning("An experiment is active, but its journal could not be read.")
-        st.caption("This file is removed once the experiment has rolled back. If it stays after the "
-                   "run ends, use `scripts\\recover.bat`.")
-    else:
-        st.caption("No experiment is currently injected.")
 
 # ---------------- Charts and tables ----------------
 st.divider()
