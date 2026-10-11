@@ -8,6 +8,8 @@ python -m planner rank [--limit N]           the N (default 5) deadliest attacks
 python -m planner interpret "REQUEST" [--out F] one attack from a plain-words request, policy-checked,
                                              never injected (the dashboard's attack console)
 python -m planner execute F --confirm        run the plan `interpret` saved in F (policy re-checked)
+                                             then Agent 2 reports on it and the remediator recommends
+                                             a fix (--no-report / --no-remediation skip; also for run)
 python -m planner run --goal "..."           plan and run experiments (asks y/N before each injection)
     --limit N            at most N experiments (default 3)
     --approve ID ...     pre-approve these experiment ids (non-interactive)
@@ -48,6 +50,61 @@ def _tools(args: argparse.Namespace, approver_default: bool = True) -> ToolInter
     else:
         approver = CLIApprover(pre_approved=set(getattr(args, "approve", None) or ()))
     return ToolInterface(config, DockerCli(), auditor, approver=approver)
+
+
+def _report(args: argparse.Namespace, tools: ToolInterface, experiment_ids: list[str]) -> None:
+    """Agent 2 writes the failure report for each experiment that ran, as the orchestrator CLI does.
+    The runner writes results/<id>.json only after rollback and recovery, so this runs on a
+    recovered system. A reporter problem never fails the command."""
+    if args.no_report:
+        return
+    from reporter.service import report_after_experiment
+    from schemas import ExperimentResult
+
+    results_dir = Path(tools.config.results_dir)
+    for experiment_id in experiment_ids:
+        try:
+            result = ExperimentResult.model_validate_json(
+                (results_dir / f"{experiment_id}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"no report for {experiment_id}: {exc}")
+            continue
+        report_after_experiment(result, results_dir, tools.config.compose_project)
+
+
+def _remediate(args: argparse.Namespace, tools: ToolInterface, experiment_ids: list[str],
+               proposer: object | None = None) -> None:
+    """The remediator after the report, as the agent graph runs it: a config recommendation per
+    experiment, then a code recommendation for each one the agent declined. It only files proposals
+    for human review. A remediator problem never fails the command."""
+    if args.no_remediation or not experiment_ids:
+        return
+    from agents import tracing
+    from remediation.agent import GroqProposer
+    from remediation.compose import load_services
+    from remediation.models import Proposal
+    from remediation.recommend import recommend_code, recommend_config
+    from remediation.source import build_check
+
+    def show(filed) -> list[str]:
+        for proposal in filed.proposals:
+            state = "declined" if not proposal.remediable else (
+                "rejected by policy" if proposal.policy_problems else "awaiting review")
+            print(f"remediation {proposal.id}: {state}")
+        for error in filed.errors:
+            print(f"remediation error: {error}")
+        return [p.id for p in filed.proposals if isinstance(p, Proposal) and not p.remediable]
+
+    try:
+        proposer = proposer or GroqProposer()
+        print("\nThe remediator is writing its recommendation...")
+        with tracing.span(f"remediation {' '.join(experiment_ids)}", {"result_ids": experiment_ids}):
+            declined = show(recommend_config(proposer, tools.config, load_services(), experiment_ids))
+            for declined_id in declined:
+                show(recommend_code(proposer, tools.config, declined_id,
+                                    None if args.no_build else build_check))
+    except Exception as exc:  # noqa: BLE001 - the attack is over; a recommendation problem is a note
+        print(f"the remediator could not finish: {type(exc).__name__}: {exc}")
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -120,6 +177,9 @@ def cmd_execute(args: argparse.Namespace) -> int:
         tools.approver = ConsoleApproval(plan.experiment_id)
     result = execute(tools, plan)
     print(json.dumps(result, indent=2))
+    if result["status"] == "ran":
+        _report(args, tools, [plan.experiment_id])
+        _remediate(args, tools, [plan.experiment_id])
     return 0 if result["status"] == "ran" else 2
 
 
@@ -139,6 +199,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                 print(f"      reason: {reason}")
     print(f"audit   {tools.auditor.dir}")
     print("=" * 72)
+    ran = [o["experiment_id"] for o in report.get("outcomes", [])
+           if o.get("status") == "ran" and o.get("experiment_id")]
+    _report(args, tools, ran)
+    _remediate(args, tools, ran)
     return 0
 
 
@@ -174,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
     p_exe.add_argument("request_file", type=Path)
     p_exe.add_argument("--confirm", action="store_true",
                        help="the operator confirms this plan; without it the run is denied")
+    p_exe.add_argument("--no-report", action="store_true", help="skip the automatic Agent 2 failure report")
+    p_exe.add_argument("--no-remediation", action="store_true",
+                       help="skip the remediator's recommendation after the report")
+    p_exe.add_argument("--no-build", action="store_true", help="skip the build check of code recommendations")
     p_exe.set_defaults(func=cmd_execute)
 
     p_run = sub.add_parser("run", help="plan and run experiments")
@@ -182,6 +250,10 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--approve", nargs="*", help="experiment ids to pre-approve (non-interactive)")
     p_run.add_argument("--auto", action="store_true", help="approve every policy-accepted plan")
     p_run.add_argument("--dry-run", action="store_true", help="select and policy-check only; no injection")
+    p_run.add_argument("--no-report", action="store_true", help="skip the automatic Agent 2 failure report")
+    p_run.add_argument("--no-remediation", action="store_true",
+                       help="skip the remediator's recommendation after the report")
+    p_run.add_argument("--no-build", action="store_true", help="skip the build check of code recommendations")
     p_run.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)

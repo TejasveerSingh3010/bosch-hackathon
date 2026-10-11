@@ -443,3 +443,52 @@ def test_board_entries_carry_the_catalogue_text(config, docker, results_dir, wri
     doc = rank_deadliest(ToolInterface(config, docker, auditor(results_dir), approver=DenyAll()))
     entry = doc["ranked"][0]
     assert entry["target"] in entry["hypothesis"] and entry["recovery_criteria"] and entry["description"]
+
+
+def test_a_finished_run_is_reported_from_its_recorded_result(
+        config, docker, results_dir, write_telemetry, monkeypatch):
+    import argparse
+
+    import reporter.service
+    from planner.__main__ import _report
+
+    tools = make_tools(config, docker, results_dir, write_telemetry, DenyAll())
+    request = results_dir / "request.json"
+    request.write_text(json.dumps(interpret(tools, "pause adservice for 10 seconds")), encoding="utf-8")
+    plan = load_plan(request)
+    tools.approver = ConsoleApproval(plan.experiment_id)
+    assert execute(tools, plan)["status"] == "ran"
+
+    reported = []
+    monkeypatch.setattr(reporter.service, "report_after_experiment",
+                        lambda result, *_args, **_kw: reported.append(result.experiment.id))
+    _report(argparse.Namespace(no_report=True), tools, [plan.experiment_id])
+    assert not reported
+    _report(argparse.Namespace(no_report=False), tools, [plan.experiment_id, "never-ran"])
+    assert reported == [plan.experiment_id]  # the result is on disk; a missing one is skipped
+
+
+def test_the_remediator_follows_the_report_config_first_then_code_for_a_declined_one(config, monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+
+    import remediation.recommend
+    from planner.__main__ import _remediate
+    from remediation.models import Proposal
+
+    declined = Proposal.model_construct(id="rem-1", remediable=False, policy_problems=[])
+    calls = []
+    monkeypatch.setattr(remediation.recommend, "recommend_config", lambda _p, _c, _s, ids: (
+        calls.append(("config", ids)) or SimpleNamespace(proposals=[declined], errors=[])))
+    monkeypatch.setattr(remediation.recommend, "recommend_code", lambda _p, _c, pid, build: (
+        calls.append(("code", pid, build)) or SimpleNamespace(proposals=[], errors=["no fix"])))
+    tools = SimpleNamespace(config=config)
+    args = argparse.Namespace(no_remediation=False, no_build=True)
+
+    _remediate(argparse.Namespace(no_remediation=True, no_build=True), tools, ["exp-1"], proposer=object())
+    assert not calls
+    _remediate(args, tools, ["exp-1"], proposer=object())
+    assert calls == [("config", ["exp-1"]), ("code", "rem-1", None)]
+
+    monkeypatch.setattr(remediation.recommend, "recommend_config", lambda *_a: 1 / 0)
+    _remediate(args, tools, ["exp-1"], proposer=object())  # a remediator failure never fails the run
