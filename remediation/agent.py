@@ -265,16 +265,28 @@ class MinuteBudget:
         self.spent.append((self.clock(), tokens))
 
 
+def second_api_key() -> str | None:
+    """The optional second Groq key for the code stage, so it draws on its own tokens-a-minute budget
+    instead of sharing the config stage's. Returns None when only one key is set (one shared bucket)."""
+    load_dotenv(REPO_ROOT / ".env")
+    for name in ("LLM_API_KEY_2", "GROQ_API_KEY_2", "LLM_CODE_API_KEY"):
+        value = os.getenv(name)
+        if value and value != "your-key-here":
+            return value
+    return None
+
+
 class GroqProposer:
     def __init__(
-        self, model: str = MODEL, client: groq.Groq | None = None, budget: MinuteBudget | None = None
+        self, model: str = MODEL, client: groq.Groq | None = None, budget: MinuteBudget | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.model_name = model
         self.budget = budget or MinuteBudget()
         self.last_trace_id: str | None = None  # Langfuse trace of the latest call, for scores
         if client is None:
             load_dotenv(REPO_ROOT / ".env")
-            key = os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY")
+            key = api_key or os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY")
             if not key or key == "your-key-here":
                 raise ProposalError("no Groq API key - set LLM_API_KEY in .env")
             client = groq.Groq(api_key=key)

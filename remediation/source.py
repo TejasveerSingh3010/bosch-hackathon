@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -384,6 +385,52 @@ def build_caches(language: str) -> list[tuple[str, str]]:
     return next((mounts for key, mounts in BUILD_CACHES.items() if lang.startswith(key)), [])
 
 
+def _host_syntax_check(
+    language: str, files: dict[str, tuple[str, str]], rel: dict[str, str]
+) -> tuple[BuildCheck, dict[str, tuple[str, str]]] | None:
+    """Node and Python edits are syntax-only checks (`node --check`, `py_compile`), so the same check
+    can run on the host when the interpreter is present, which avoids starting a container. Returns the
+    result, or None to fall back to the service's build image (unsupported language, missing tool, or a
+    problem running it). Files come back unchanged, as the container path returns them for these
+    languages, so the result is identical to building in the image - only faster."""
+    lang = language.lower()
+    if lang.startswith("python"):
+        runner = [sys.executable, "-m", "py_compile"]
+        what, exts, per_file = "syntax check (python -m py_compile)", (".py",), False
+    elif lang.startswith("node"):
+        node = shutil.which("node")
+        if node is None:
+            return None
+        runner = [node, "--check"]
+        what, exts, per_file = "syntax check (node --check)", (".js", ".cjs", ".mjs"), True
+    else:
+        return None
+    targets = [(path, rel[path]) for path in files if rel[path].endswith(exts)]
+    if not targets:
+        return BuildCheck(status="passed", detail=f"{what}: no files needed checking"), files
+    try:
+        with tempfile.TemporaryDirectory(prefix="remediation-syntax-") as tmp:
+            written = []
+            for path, name in targets:
+                dest = Path(tmp) / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(files[path][1], encoding="utf-8", newline="\n")
+                written.append(str(dest))
+            batches = [[w] for w in written] if per_file else [written]
+            proc = None
+            for batch in batches:
+                proc = subprocess.run([*runner, *batch], capture_output=True, text=True,
+                                      timeout=120, check=False)
+                if proc.returncode != 0:
+                    break
+    except (OSError, subprocess.TimeoutExpired):
+        return None  # fall back to the build image
+    output = (proc.stderr or proc.stdout).strip()
+    if proc.returncode == 0:
+        return BuildCheck(status="passed", detail=f"{what} succeeded on the host"), files
+    return BuildCheck(status="failed", detail=f"{what} failed:\n{output[-1500:]}"), files
+
+
 def build_check(
     root: Path, code_dir: str, language: str, files: dict[str, tuple[str, str]], timeout: float = 900
 ) -> tuple[BuildCheck, dict[str, tuple[str, str]]]:
@@ -398,6 +445,9 @@ def build_check(
     plan = check_script(language, sorted(rel.values()))
     if plan is None:
         return BuildCheck(status="skipped", detail=f"no build check for {language} services"), files
+    host = _host_syntax_check(language, files, rel)
+    if host is not None:  # Node/Python syntax checks run on the host, off the container path
+        return host
     script, what = plan
     image = builder_image(root / code_dir / "Dockerfile")
     if image is None:

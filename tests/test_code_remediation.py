@@ -11,16 +11,18 @@ import pytest
 import yaml
 
 from remediation.__main__ import file_code_proposal
-from remediation.agent import code_excerpts
+from remediation.agent import code_excerpts, experiment_records
 from remediation.models import (
     BuildCheck,
     CodeEdit,
     CodeProposalDraft,
+    Critique,
     Evidence,
     SuccessCriterion,
     ValidationExperiment,
 )
 from remediation.policy import PROTECTED_SERVICES, SERVICE_DOCS, check_code_proposal
+from remediation.recommend import review_and_revise
 from remediation.source import (
     CHECKOUT_DIR,
     SourceError,
@@ -451,3 +453,37 @@ def test_every_mapped_function_exists_in_the_pinned_source():
                     except SourceError:
                         missing.append(f"{name}/{entry['file']}:{function}")
     assert not missing
+
+
+# ---------------------------------------------------------------- the two-key split
+class _RecordingProposer:
+    """A stand-in that records which stage was asked of it, so a test can see which key ran what."""
+
+    model_name = "fake"
+
+    def __init__(self, draft):
+        self._draft = draft
+        self.calls: list[str] = []
+
+    def critique_code(self, _context):
+        self.calls.append("critique")
+        return Critique(fixes_diagnosis=True, issues=[])
+
+    def propose_code(self, _context):
+        self.calls.append("propose")  # a rewrite
+        return self._draft
+
+
+def test_the_review_runs_on_the_critic_proposer_when_one_is_given(results_dir, config, checkout):
+    """With two keys the code author and the reviewer are different proposers; the critique must go to
+    the reviewer (the second key's budget), never to the code author."""
+    write_record(results_dir, make_result("kill-cart-1"))
+    draft = make_code_draft()
+    group = experiment_records(results_dir, ["kill-cart-1"])
+    author, critic = _RecordingProposer(draft), _RecordingProposer(draft)
+
+    review_and_revise(author, draft, make_proposal(pid="rem-declined"), group, config, checkout, DOCS,
+                      None, critic=critic)
+
+    assert "critique" in critic.calls            # the review ran on the critic
+    assert "critique" not in author.calls         # and not on the code author

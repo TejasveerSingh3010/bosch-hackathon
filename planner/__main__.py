@@ -74,17 +74,19 @@ def _report(args: argparse.Namespace, tools: ToolInterface, experiment_ids: list
 
 def _remediate(args: argparse.Namespace, tools: ToolInterface, experiment_ids: list[str],
                proposer: object | None = None) -> None:
-    """The remediator after the report, as the agent graph runs it: a config recommendation per
-    experiment, then a code recommendation for each one the agent declined. It only files proposals
-    for human review. A remediator problem never fails the command."""
+    """The remediator after the report. The configuration recommendation per experiment is filed
+    inline (seconds); a code recommendation for each one the agent declines is then launched in the
+    background (minutes - an LLM call, the review-and-rewrite pass and a compile check), so the
+    operator's run returns as soon as the config fix is on disk. The dashboard shows each code
+    proposal when its file lands. It only files proposals for human review; a remediator problem
+    never fails the command."""
     if args.no_remediation or not experiment_ids:
         return
     from agents import tracing
     from remediation.agent import GroqProposer
     from remediation.compose import load_services
     from remediation.models import Proposal
-    from remediation.recommend import recommend_code, recommend_config
-    from remediation.source import build_check
+    from remediation.recommend import recommend_config
 
     def show(filed) -> list[str]:
         for proposal in filed.proposals:
@@ -100,11 +102,42 @@ def _remediate(args: argparse.Namespace, tools: ToolInterface, experiment_ids: l
         print("\nThe remediator is writing its recommendation...")
         with tracing.span(f"remediation {' '.join(experiment_ids)}", {"result_ids": experiment_ids}):
             declined = show(recommend_config(proposer, tools.config, load_services(), experiment_ids))
-            for declined_id in declined:
-                show(recommend_code(proposer, tools.config, declined_id,
-                                    None if args.no_build else build_check))
+        if declined:
+            _spawn_code_recommendation(args, tools.config, declined)
     except Exception as exc:  # noqa: BLE001 - the attack is over; a recommendation problem is a note
         print(f"the remediator could not finish: {type(exc).__name__}: {exc}")
+
+
+def _spawn_code_recommendation(args: argparse.Namespace, config, declined_ids: list[str]) -> None:
+    """Launch `python -m remediation propose-code <id>` for each declined proposal as a detached
+    background process. The code recommendation is the slow part (one LLM call, the review-and-rewrite
+    pass and the compile check), so running it off the critical path keeps the operator's wait down to
+    the configuration fix. Each run logs to results/remediation/code-<id>.log and files its own
+    proposal there, which the dashboard picks up on its next refresh."""
+    import subprocess
+
+    log_dir = Path(config.results_dir) / "remediation"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    # On Windows, detach so the background run outlives this process and shows no console window.
+    creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) if sys.platform == "win32" else 0
+    base = [sys.executable, "-m", "remediation"]
+    if getattr(args, "results_dir", None):
+        base += ["--results-dir", str(args.results_dir)]
+    if getattr(args, "target_file", None):
+        base += ["--target-file", str(args.target_file)]
+    for declined_id in declined_ids:
+        cmd = [*base, "propose-code", declined_id]
+        if getattr(args, "no_build", False):
+            cmd.append("--no-build")
+        log_path = log_dir / f"code-{declined_id}.log"
+        print(f"the code recommendation for {declined_id} is running in the background "
+              f"(log: results/remediation/{log_path.name})")
+        try:
+            with open(log_path, "ab") as log:
+                subprocess.Popen(cmd, cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, creationflags=creationflags)
+        except OSError as exc:
+            print(f"could not start the background code recommendation for {declined_id}: {exc}")
 
 
 def cmd_list(args: argparse.Namespace) -> int:

@@ -174,6 +174,7 @@ def review_and_revise(
     checkout: Path,
     docs: dict[str, Any],
     reports_dir: Path | None,
+    critic: Proposer | None = None,
 ) -> tuple[CodeProposalDraft, list[str], bool]:
     """One review pass over a code draft, and at most one rewrite: (final draft, issues found, revised).
 
@@ -181,14 +182,15 @@ def review_and_revise(
     patch, nothing more. Any issue from either earns one rewrite with the issues attached. The
     reviewer cannot approve anything, and its issues go on the review sheet for the human.
     """
-    if not draft.remediable or not hasattr(proposer, "critique_code"):
+    reviewer = critic or proposer
+    if not draft.remediable or not hasattr(reviewer, "critique_code"):
         return draft, [], False
     problems, edited = check_code_proposal(draft, config, checkout, docs, reports_dir)
     if any(p.startswith(UNREVISABLE) for p in problems):
         return draft, [], False  # no rewrite can make the data real; save the tokens
     patch = render_patch(edited.files) if not edited.problems else ""
     try:
-        critique = proposer.critique_code(critique_context(draft, declined, patch, problems, group))
+        critique = reviewer.critique_code(critique_context(draft, declined, patch, problems, group))
     except ProposalError as exc:
         return draft, [f"review pass failed: {exc}"], False
     issues = list(problems) + [f"review: {i}" for i in critique.issues]
@@ -230,8 +232,13 @@ def recommend_code(
     checkout: Path | None = None,
     reports_dir: Path | None = None,
     progress: Callable[[list[str]], None] | None = None,
+    critic: Proposer | None = None,
 ) -> Filed:
-    """Answer a declined configuration proposal with a code recommendation per fault, and file them."""
+    """Answer a declined configuration proposal with a code recommendation per fault, and file them.
+
+    The code draft and any rewrite run on `proposer`; the review pass runs on `critic` when one is
+    given, so with two Groq keys the code and critique calls draw on separate tokens-a-minute budgets
+    and the config -> code -> critique -> rewrite sequence alternates keys instead of waiting."""
     store = Store(config.results_dir)
     declined = store.load_proposal(declined_id)
     if not isinstance(declined, Proposal) or declined.remediable:
@@ -255,7 +262,7 @@ def recommend_code(
                 traced.finish({"error": str(exc)})
                 continue
             draft, issues, revised = review_and_revise(
-                proposer, draft, declined, group, config, checkout, docs, reports_dir
+                proposer, draft, declined, group, config, checkout, docs, reports_dir, critic
             )
             proposal = file_code_proposal(
                 draft, f"llm:{proposer.model_name}", declined, config, checkout, docs_raw, build, store,

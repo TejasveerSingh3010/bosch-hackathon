@@ -468,10 +468,11 @@ def test_a_finished_run_is_reported_from_its_recorded_result(
     assert reported == [plan.experiment_id]  # the result is on disk; a missing one is skipped
 
 
-def test_the_remediator_follows_the_report_config_first_then_code_for_a_declined_one(config, monkeypatch):
+def test_the_remediator_files_config_inline_then_backgrounds_code_for_a_declined_one(config, monkeypatch):
     import argparse
     from types import SimpleNamespace
 
+    import planner.__main__ as planner_main
     import remediation.recommend
     from planner.__main__ import _remediate
     from remediation.models import Proposal
@@ -480,15 +481,16 @@ def test_the_remediator_follows_the_report_config_first_then_code_for_a_declined
     calls = []
     monkeypatch.setattr(remediation.recommend, "recommend_config", lambda _p, _c, _s, ids: (
         calls.append(("config", ids)) or SimpleNamespace(proposals=[declined], errors=[])))
-    monkeypatch.setattr(remediation.recommend, "recommend_code", lambda _p, _c, pid, build: (
-        calls.append(("code", pid, build)) or SimpleNamespace(proposals=[], errors=["no fix"])))
+    # The code recommendation now runs in a detached background process; the planner only launches it.
+    monkeypatch.setattr(planner_main, "_spawn_code_recommendation",
+                        lambda _a, _c, ids: calls.append(("code", ids)))
     tools = SimpleNamespace(config=config)
-    args = argparse.Namespace(no_remediation=False, no_build=True)
+    args = argparse.Namespace(no_remediation=False, no_build=True, results_dir=None, target_file=None)
 
     _remediate(argparse.Namespace(no_remediation=True, no_build=True), tools, ["exp-1"], proposer=object())
     assert not calls
     _remediate(args, tools, ["exp-1"], proposer=object())
-    assert calls == [("config", ["exp-1"]), ("code", "rem-1", None)]
+    assert calls == [("config", ["exp-1"]), ("code", ["rem-1"])]
 
     monkeypatch.setattr(remediation.recommend, "recommend_config", lambda *_a: 1 / 0)
     _remediate(args, tools, ["exp-1"], proposer=object())  # a remediator failure never fails the run

@@ -33,6 +33,7 @@ from .agent import (
     MODEL,
     GroqProposer,
     ProposalError,
+    second_api_key,
 )
 from .compose import ComposeCli, ComposeError, FixJournal, load_services
 from .consistency import CartProbe
@@ -165,13 +166,18 @@ def cmd_propose_code(args: argparse.Namespace) -> int:
         store.save_proposal(proposal, {})
         return show_code(proposal, store)
     try:
-        proposer = GroqProposer(args.model)
+        second = second_api_key()
+        proposer = GroqProposer(args.model, api_key=second)  # code + rewrite on the second key
+        critic = GroqProposer(args.model) if second else proposer  # critique on the primary key
     except ProposalError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_ERROR
+    if second:
+        print("using a second Groq key for the code stage (config/critique on the primary key)")
     if build:
         print("edits are checked in each service's own build image (the first run pulls it)")
-    filed = recommend_code(proposer, config, declined.id, build, checkout, args.reports_dir, asking)
+    filed = recommend_code(proposer, config, declined.id, build, checkout, args.reports_dir, asking,
+                           critic=critic)
     return show_filed(filed, store, show_code)
 
 
