@@ -204,42 +204,143 @@ else:
     )
 
 # ---------------- Service health ----------------
-# ---------------- Failure report ----------------
-def _latest_report():
-    """The newest report Agent 2 wrote (reports/latest.json + latest.md), or (None, None)."""
-    reports_dir = Path(os.getenv("BOUTIQUE_REPORTS_DIR") or core.OUT_DIR.parent / "reports")
+# ---------------- Recent attack: failure report + recommendation ----------------
+REPORTS_DIR = Path(os.getenv("BOUTIQUE_REPORTS_DIR") or core.OUT_DIR.parent / "reports")
+
+
+def _read_report(name):
+    """reports/<name>.json + .md as (data, markdown), or (None, None)."""
     try:
-        data = json.loads((reports_dir / "latest.json").read_text(encoding="utf-8"))
-        text = (reports_dir / "latest.md").read_text(encoding="utf-8")
-        return data, text
+        data = json.loads((REPORTS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+        return data, (REPORTS_DIR / f"{name}.md").read_text(encoding="utf-8")
     except (OSError, ValueError):
         return None, None
 
 
+def _latest_attack():
+    """The newest finished experiment in results/. The runner writes results/<id>.json only after
+    the rollback and the wait for recovery, so the section moves on once the system is healthy again."""
+    newest = None
+    for path in core.OUT_DIR.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or "verdict" not in data or not data.get("ended_at"):
+            continue
+        if newest is None or data["ended_at"] > newest["ended_at"]:
+            newest = data
+    return newest
+
+
+def _recent_failure():
+    """(report, markdown, pending result). The newest finished attack's report; an incident report the
+    watcher wrote after that attack wins. If the newest attack has no report yet, pending is its result."""
+    latest, latest_md = _read_report("latest")
+    attack = _latest_attack()
+    if attack is None:
+        return latest, latest_md, None
+    ended = datetime.fromisoformat(attack["ended_at"]).timestamp()
+    if latest is not None and latest.get("kind") != "experiment" \
+            and datetime.fromisoformat(latest["generated_at"]).timestamp() > ended:
+        return latest, latest_md, None
+    report, report_md = _read_report(attack["experiment"]["id"])
+    return (report, report_md, None) if report is not None else (None, None, attack)
+
+
+def _when_text(when):
+    """'YYYY-MM-DD HH:MM:SS (5m ago)' for an ISO timestamp."""
+    try:
+        at = datetime.fromisoformat(when)
+    except (TypeError, ValueError):
+        return when
+    ago = max(0, int(time.time() - at.timestamp()))
+    ago_text = (f"{ago // 86400}d ago" if ago >= 86400 else f"{ago // 3600}h ago" if ago >= 3600
+                else f"{ago // 60}m ago" if ago >= 60 else f"{ago}s ago")
+    return f"{at.astimezone().strftime('%Y-%m-%d %H:%M:%S')} ({ago_text})"
+
+
+def _latest_recommendation(experiment_id):
+    """The newest remediation proposal for this experiment (results/remediation/*/proposal.json), or None."""
+    root = core.OUT_DIR / "remediation"
+    try:
+        folders = sorted((f for f in root.iterdir() if (f / "proposal.json").exists()), reverse=True)
+    except OSError:
+        return None
+    for folder in folders:
+        try:
+            data = json.loads((folder / "proposal.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if experiment_id in data.get("source_results", []):
+            data["_status"] = _recommendation_status(folder, data)
+            return data
+    return None
+
+
+def _recommendation_status(folder, data):
+    """Same wording as remediation.store.Store.status."""
+    if not data.get("remediable"):
+        return "declined by agent"
+    if data.get("policy_problems"):
+        return "rejected by policy"
+    try:
+        verification = json.loads((folder / "verification.json").read_text(encoding="utf-8"))
+        return f"verified: {verification['verdict'].upper()}"
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        approval = json.loads((folder / "approval.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "awaiting review"
+    return "accepted by reviewer" if approval.get("decision") == "approved" else "rejected by reviewer"
+
+
+def _recommendation_summary(rec):
+    """One line per proposed change: Compose settings or code edits."""
+    if not rec.get("remediable"):
+        return [rec.get("declined_reason") or "No change proposed."]
+    if "edits" in rec:
+        return [f"`{e['service']}/{e['file']}` {e['function']}: {e['purpose']}" for e in rec["edits"]]
+    return [f"`{c['service']}`: set {c['setting']} = {c['value']}" for c in rec.get("changes", [])]
+
+
 st.divider()
-st.subheader("FAILURE REPORT")
-_report, _report_md = _latest_report()
-if _report is None:
+st.subheader("RECENT ATTACK")
+if _active:
+    st.caption(f"{_active[0]} on {_active[1]} is in progress. This section updates once it has been "
+               "rolled back and the system has recovered.")
+_report, _report_md, _pending = _recent_failure()
+if _pending is not None:
+    _exp = _pending["experiment"]
+    st.markdown("**Failure report**")
+    st.markdown(f"**Last attack:** {_exp['action']} on {_exp['target']}, verdict {_pending['verdict']}, "
+                f"recovered {_when_text(_pending.get('recovered_at') or _pending['ended_at'])}")
+    st.caption("Agent 2 is writing the report for this attack.")
+elif _report is None:
     st.caption("No failure report yet.")
 else:
     _analysis = _report["analysis"]
     _when = (_analysis.get("origin") or {}).get("first_degraded_at") \
         or (_report.get("evidence") or {}).get("window_start") or _report["generated_at"]
-    try:
-        _at = datetime.fromisoformat(_when)
-        _ago = max(0, int(time.time() - _at.timestamp()))
-        _ago_text = (f"{_ago // 86400}d ago" if _ago >= 86400 else f"{_ago // 3600}h ago" if _ago >= 3600
-                     else f"{_ago // 60}m ago" if _ago >= 60 else f"{_ago}s ago")
-        _when_text = f"{_at.strftime('%Y-%m-%d %H:%M:%S')} ({_ago_text})"
-    except ValueError:
-        _when_text = _when
     _previous = st.session_state.get("last_report_id")
     if _previous is not None and _previous != _report["id"]:
         st.toast(f"New failure report: {_report['id']}")
     st.session_state.last_report_id = _report["id"]
-    st.markdown(f"**Last failure:** {_when_text}  \n**What happened:** {_analysis['headline']}")
+    st.markdown("**Failure report**")
+    st.markdown(f"**Last failure:** {_when_text(_when)}  \n**What happened:** {_analysis['headline']}")
     with st.expander("Full report"):
         st.markdown(_report_md)
+
+    st.markdown("**Recommendation**")
+    _rec = _latest_recommendation(_report["id"])
+    if _rec is None:
+        st.caption("No recommendation yet.")
+    else:
+        _kind = "code change" if "edits" in _rec else "config change"
+        st.markdown(f"**{_rec['id']}** ({_kind}, {_rec['_status']})  \n"
+                    f"**Problem:** {_rec['diagnosed_problem']}")
+        st.markdown("\n".join(f"- {line}" for line in _recommendation_summary(_rec)))
 
 st.divider()
 st.subheader("SERVICE HEALTH")
