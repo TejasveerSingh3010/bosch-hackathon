@@ -392,3 +392,48 @@ def test_rank_deadliest_reads_per_service_health_and_writes_the_board(
 
     path = write_ranking(doc, results_dir)
     assert json.loads(path.read_text(encoding="utf-8"))["ranked"] == doc["ranked"]
+
+
+# --------------------------------------------------------------------------- the attack console
+from planner.console import ConsoleApproval, execute, interpret, load_plan, parse  # noqa: E402
+
+
+def test_the_offline_parser_reads_attack_target_and_numbers():
+    services = ["cartservice", "currencyservice", "redis-cart", "frontend"]
+    read = parse({"prompt": "add 400 ms latency and 10% loss to the cart service for 20 seconds",
+                  "services": services})
+    assert read["understood"] and read["action"] == "network_delay" and read["target"] == "cartservice"
+    assert read["params"] == {"delay_ms": 400, "loss_pct": 10.0} and read["duration_s"] == 20
+    capped = parse({"prompt": "cap redis-cart memory at 64 MB", "services": services})
+    assert capped["target"] == "redis-cart" and capped["params"] == {"memory_mb": 64}
+    assert not parse({"prompt": "delete the database", "services": services})["understood"]
+
+
+def test_interpret_builds_and_checks_a_plan_but_injects_nothing(config, docker, results_dir, write_telemetry):
+    write_telemetry(count=5)
+    tools = ToolInterface(config, docker, auditor(results_dir), approver=DenyAll())
+    out = interpret(tools, "freeze adservice for 10 seconds")
+    assert out["understood"] and out["allowed"] and out["interpreted_by"] == "stub"
+    assert out["plan"]["action"] == "pause" and out["plan"]["max_duration_s"] == 10
+    assert not docker.calls
+    refused = interpret(tools, "pause loadgenerator")  # a protected service is never a target
+    assert not refused["allowed"]
+
+
+def test_a_console_run_needs_the_operators_confirmation(config, docker, results_dir, write_telemetry):
+    tools = make_tools(config, docker, results_dir, write_telemetry, DenyAll())
+    request = results_dir / "request.json"
+    request.write_text(json.dumps(interpret(tools, "pause adservice for 10 seconds")), encoding="utf-8")
+    plan = load_plan(request)
+
+    assert execute(tools, plan)["status"] == "not_approved"  # no --confirm: denied
+    assert not docker.calls
+
+    tools.approver = ConsoleApproval(plan.experiment_id)
+    out = execute(tools, plan)
+    assert out["status"] == "ran" and out["experiment_id"] == plan.experiment_id
+    assert ("pause", f"{PROJECT}-adservice-1") in docker.calls
+    assert not docker.containers[f"{PROJECT}-adservice-1"].paused  # rolled back
+    other = plan.model_copy(update={"experiment_id": "something-else"})
+    assert execute(tools, other)["status"] == "not_approved"  # confirmation covers one plan only
+

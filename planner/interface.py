@@ -28,7 +28,7 @@ from .approval import Approver, DenyAll
 from .audit import Auditor
 from .catalogue import ATTACK_NAMES, CATALOGUE, DEFAULT_DURATION_S, get_attack
 from .plan import AttackPlan
-from .policy import check_plan
+from .policy import PolicyDecision, check_plan
 
 
 def allowed_services(config: TargetConfig) -> list[str]:
@@ -256,7 +256,17 @@ class ToolInterface:
         except (KeyError, ValueError) as exc:
             return ToolResult("error", f"{action}-{target}", f"could not build a plan: {exc}").as_dict()
         self.auditor.plan(plan)
+        return self.execute_plan(plan)
 
+    def check(self, plan: AttackPlan) -> PolicyDecision:
+        """The independent policy check alone: what would happen to this plan, without running it."""
+        containers = self.docker.list_containers(self.config.compose_project)  # type: ignore[attr-defined]
+        telemetry = None if self.skip_health_check else self.telemetry
+        return check_plan(plan, self.config, containers, telemetry, self.skip_health_check)
+
+    def execute_plan(self, plan: AttackPlan) -> dict[str, Any]:
+        """Steps 2-4 for a plan that is already built: policy check, approval, run. The policy is
+        always re-checked here, so a plan saved earlier (the dashboard console) gets no shortcut."""
         # 2. independent policy check
         containers = self.docker.list_containers(self.config.compose_project)  # type: ignore[attr-defined]
         telemetry = None if self.skip_health_check else self.telemetry

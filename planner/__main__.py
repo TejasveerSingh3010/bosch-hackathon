@@ -5,6 +5,9 @@ python -m planner health                     the current cluster-health snapshot
 python -m planner details <attack>           one attack's hypothesis, parameters, recovery criteria
 python -m planner rank [--limit N]           the N (default 5) deadliest attacks given current health;
                                              writes results/attack_ranking.json for the dashboard
+python -m planner interpret "REQUEST" [--out F] one attack from a plain-words request, policy-checked,
+                                             never injected (the dashboard's attack console)
+python -m planner execute F --confirm        run the plan `interpret` saved in F (policy re-checked)
 python -m planner run --goal "..."           plan and run experiments (asks y/N before each injection)
     --limit N            at most N experiments (default 3)
     --approve ID ...     pre-approve these experiment ids (non-interactive)
@@ -88,6 +91,38 @@ def cmd_rank(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_interpret(args: argparse.Namespace) -> int:
+    from .console import interpret
+
+    if args.session is None:
+        args.session = "console"
+    result = interpret(_tools(args, approver_default=False), args.request)
+    text = json.dumps(result, indent=2)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.with_suffix(".tmp").write_text(text, encoding="utf-8")
+        args.out.with_suffix(".tmp").replace(args.out)
+    print(text)
+    return 0 if result["allowed"] else 2
+
+
+def cmd_execute(args: argparse.Namespace) -> int:
+    from .console import ConsoleApproval, execute, load_plan
+
+    if args.session is None:
+        args.session = "console"
+    plan = load_plan(args.request_file)
+    if plan is None:
+        print("the request file holds no plan", file=sys.stderr)
+        return 1
+    tools = _tools(args, approver_default=False)
+    if args.confirm:
+        tools.approver = ConsoleApproval(plan.experiment_id)
+    result = execute(tools, plan)
+    print(json.dumps(result, indent=2))
+    return 0 if result["status"] == "ran" else 2
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     tools = _tools(args)
     planner = AttackPlanner(tools)
@@ -130,6 +165,16 @@ def main(argv: list[str] | None = None) -> int:
     p_rank = sub.add_parser("rank", help="rank the deadliest attacks given current health")
     p_rank.add_argument("--limit", type=int, default=5, help="how many to rank (default 5)")
     p_rank.set_defaults(func=cmd_rank)
+
+    p_int = sub.add_parser("interpret", help="turn a plain-words request into one policy-checked plan")
+    p_int.add_argument("request", help='e.g. "add 400 ms latency to cartservice for 20 s"')
+    p_int.add_argument("--out", type=Path, help="also write the result here (for execute)")
+    p_int.set_defaults(func=cmd_interpret)
+    p_exe = sub.add_parser("execute", help="run a plan saved by interpret")
+    p_exe.add_argument("request_file", type=Path)
+    p_exe.add_argument("--confirm", action="store_true",
+                       help="the operator confirms this plan; without it the run is denied")
+    p_exe.set_defaults(func=cmd_execute)
 
     p_run = sub.add_parser("run", help="plan and run experiments")
     p_run.add_argument("--goal", default="Find the most damaging failure the safety layer allows.")

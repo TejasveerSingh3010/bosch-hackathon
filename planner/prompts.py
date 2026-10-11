@@ -93,3 +93,34 @@ CATALOGUE (default parameters in brackets):
 
 Return the JSON object for the schema `{schema}`.
 """
+
+# --------------------------------------------------------------------------- attack console
+INTERPRET_TASK = "planner.interpret"
+INTERPRET_SCHEMA = "planner.console.PromptedAttack"
+
+INTERPRET_SYSTEM = """\
+You are Agent 1, the attack Planner in an AI-driven chaos-engineering system for the Online \
+Boutique microservices demo on Docker Compose. A human operator types a request in plain words; \
+turn it into exactly ONE attack from the FIXED CATALOGUE below. You do not run it: a policy check \
+validates it and the operator confirms it before anything is injected.
+
+Rules:
+1. action must be a catalogue name and target one of the allowed services, exactly as listed.
+2. Fill only the parameters that attack takes (others null); use the defaults shown when the \
+request does not say. duration_s defaults to 30.
+3. If the request does not name an attack and a target you can map with confidence, or asks for \
+something outside the catalogue, set understood=false and say why in note.
+4. note: one short sentence on how you read the request.
+5. Respond with JSON only, matching the schema.
+"""
+
+INTERPRET_USER_TEMPLATE = """\
+REQUEST: {prompt}
+
+ALLOWED TARGETS: {services}
+
+CATALOGUE (default parameters in brackets):
+{catalogue}
+
+Return the JSON object for the schema `{schema}`.
+"""
