@@ -1,6 +1,6 @@
 """Agent 1: choose resilience experiments from the catalogue and drive them through the tools.
 
-The planner selects a ranked set of experiments (an LLM when LLM_API_KEY is set, a deterministic
+The planner selects a ranked set of experiments (openai/gpt-oss-120b when LLM_API_KEY is set, a deterministic
 blast-radius ranker otherwise - the same seam the reporter uses), then runs each one through the
 constrained tool interface: policy check, human approval, runner, audit. It ends on an
 evidence-based conclusion drawn from what actually ran, not from its own reasoning.
@@ -25,6 +25,9 @@ from . import prompts
 from .catalogue import ATTACK_NAMES, CATALOGUE, DEFAULT_DURATION_S, get_attack
 from .interface import ToolInterface, allowed_services
 
+#: The attacker reasons over the whole catalogue and live health, so it gets the larger model
+#: (the reporter keeps gpt-oss-20b). The same model the remediation agent uses.
+PLANNER_MODEL = "openai/gpt-oss-120b"
 #: Default parameters the ranker fills in for attacks that need them.
 DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "throttle": {"cpus": 0.1},
@@ -38,12 +41,30 @@ PRIORITY_ATTACKS = ("pause", "stop", "network_delay", "throttle", "memory_limit"
                     "network_partition", "flapping", "kill")
 
 
+class AttackParams(BaseModel):
+    """Every catalogue parameter, each null unless the attack takes it. Typed rather than a free
+    dict because Groq's strict JSON schema refuses an object without fixed properties."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cpus: float | None = None
+    memory_mb: int | None = None
+    delay_ms: int | None = None
+    loss_pct: float | None = None
+    down_s: float | None = None
+    up_s: float | None = None
+    cycles: int | None = None
+
+    def given(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
 class Candidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: str
     target: str
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: AttackParams = Field(default_factory=AttackParams)
     hypothesis: str = ""
 
 
@@ -80,7 +101,7 @@ def rank(services: list[str], blast: dict[str, int], limit: int) -> list[Candida
         action = PRIORITY_ATTACKS[i % len(PRIORITY_ATTACKS)]
         attack = get_attack(action)
         out.append(Candidate(
-            action=action, target=service, params=dict(DEFAULT_PARAMS.get(action, {})),
+            action=action, target=service, params=AttackParams(**DEFAULT_PARAMS.get(action, {})),
             hypothesis=attack.hypothesis.format(target=service),
         ))
     return out
@@ -119,7 +140,7 @@ def select(tools: ToolInterface, goal: str, limit: int,
         blast=", ".join(f"{s}:{blast.get(s, 0)}" for s in services) or "(unknown)",
         schema=prompts.OUTPUT_SCHEMA,
     )
-    client = get_client()
+    client = get_client(PLANNER_MODEL)
     try:
         selection = client.complete_json(
             task=prompts.TASK, system=prompts.SYSTEM, user=user, schema=Selection, payload=payload
@@ -177,11 +198,12 @@ class AttackPlanner:
                     "detail": f"unapproved experiment type {candidate.action!r}"}
         # Only pass parameters the tool actually takes; a stray one is a planner error, not a run.
         allowed = set(inspect.signature(tool).parameters) - {"target", "duration_s", "hypothesis"}
-        extra = set(candidate.params) - allowed
+        params = candidate.params.given()
+        extra = set(params) - allowed
         if extra:
             return {**tag, "status": "error",
                     "detail": f"parameters {sorted(extra)} are not valid for {candidate.action}"}
-        result = tool(target=candidate.target, hypothesis=candidate.hypothesis, **candidate.params)
+        result = tool(target=candidate.target, hypothesis=candidate.hypothesis, **params)
         return {**tag, **result}
 
     @staticmethod
@@ -197,5 +219,5 @@ class AttackPlanner:
         return f"{len(outcomes)} experiment(s): " + ", ".join(parts) + tail
 
 
-__all__ = ["ATTACK_NAMES", "DEFAULT_DURATION_S", "AttackPlanner", "Candidate", "Selection",
-           "blast_radius", "rank", "select"]
+__all__ = ["ATTACK_NAMES", "DEFAULT_DURATION_S", "PLANNER_MODEL", "AttackParams", "AttackPlanner",
+           "Candidate", "Selection", "blast_radius", "rank", "select"]

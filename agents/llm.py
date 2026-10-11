@@ -169,10 +169,14 @@ class RealClient:
         raise AssertionError("unreachable")
 
 
-def get_client() -> LLMClient:
-    """The real model when LLM_API_KEY is set (environment or .env), else the stub."""
+def get_client(model: str | None = None) -> LLMClient:
+    """The real model when LLM_API_KEY is set (environment or .env), else the stub.
+
+    `model` picks the Groq model (the planner asks for openai/gpt-oss-120b); without it the
+    reporter's default applies, overridable with LLM_MODEL.
+    """
     try:
-        return RealClient()
+        return RealClient(model)
     except NotConfigured:
         return StubClient()
 
