@@ -122,7 +122,7 @@ class Phase(BaseModel):
 
 
 class ExperimentResult(BaseModel):
-    """The artifact a day-2 analyst agent reads. One file per experiment in results/."""
+    """The artifact the reporter (Agent 2) and remediation agent read. One file per experiment in results/."""
 
     model_config = ConfigDict(extra="forbid")
 

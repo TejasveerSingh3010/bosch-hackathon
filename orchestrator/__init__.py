@@ -7,7 +7,7 @@ action, and polls `safety.Watchdog` for as long as a failure is in place.
 The shared data shapes live in the top-level `schemas` module rather than here, so the safety
 layer can validate an `Experiment` without importing the orchestrator (which would be a cycle).
 
-On day 2 the planner proposes `Experiment` objects and the analyst reads `ExperimentResult`
+On day 2 the planner proposes `Experiment` objects and the reporter (Agent 2) reads `ExperimentResult`
 files; neither needs any change here.
 """
 from .runner import ExperimentRunner

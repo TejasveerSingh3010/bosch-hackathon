@@ -10,7 +10,7 @@ An AI system that plans, injects and analyzes controlled failures in a cloud-nat
 4. **Stops itself** when an experiment does too much damage: the watchdog aborts and rolls back on error rate, latency, blast radius or lost monitoring, and anyone can force a stop.
 5. **Measures** what happened: time to detect, time to recover, which pages failed, and how error rate and latency moved against the baseline.
 
-Day 2 adds the AI planner (`planner/`, Agent 1: which experiment to run next, and why) and the analyst (ranked findings with recommended fixes). The planner is an LLM on a **constrained tool interface**: it chooses from a fixed catalogue of eight fault types (each usable on any allowed service), can act only through typed tools (never a shell or Docker directly), and every injection is re-validated by the policy check and needs human approval. The interfaces the agents plug into already exist: `schemas.Experiment` in, `schemas.ExperimentResult` out.
+Day 2 adds the AI planner (`planner/`, Agent 1: which experiment to run next, and why) the reporter (`reporter/`, Agent 2: what failed, where, and why) and the remediation agent (recommended fixes for a human to review). The planner is an LLM on a **constrained tool interface**: it chooses from a fixed catalogue of eight fault types (each usable on any allowed service), can act only through typed tools (never a shell or Docker directly), and every injection is re-validated by the policy check and needs human approval. The interfaces the agents plug into already exist: `schemas.Experiment` in, `schemas.ExperimentResult` out.
 
 ## Architecture
 
@@ -232,9 +232,12 @@ python -m planner run --limit 2 --auto
 
 :: select and policy-check only, injecting nothing
 python -m planner run --limit 3 --dry-run
+
+:: the 5 deadliest attacks given current health (no kill/pause/stop; nothing is injected)
+python -m planner rank
 ```
 
-The eight fault types: `kill`, `stop`, `pause`, `throttle` (CPU), `memory_limit`, `network_partition`, `network_delay` (latency/loss), and `flapping` (intermittent). Selection uses Groq when `LLM_API_KEY` is set and a deterministic blast-radius ranker (from `docs/services.yaml`) otherwise. Every tool request, policy decision, approval and result is written to an audit trail under `results/plans/<session>/`. The planner has no unrestricted shell or Docker access: the only way it can inject a fault is a catalogue attack that passed the policy check and a human approved.
+The eight fault types: `kill`, `stop`, `pause`, `throttle` (CPU), `memory_limit`, `network_partition`, `network_delay` (latency/loss), and `flapping` (intermittent). Selection and ranking use Groq `openai/gpt-oss-120b` when `LLM_API_KEY` is set and a deterministic blast-radius ranker (from `docs/services.yaml`) otherwise. Every tool request, policy decision, approval and result is written to an audit trail under `results/plans/<session>/`. `planner rank` writes `results/attack_ranking.json`, which the dashboard shows next to the chaos tests and refreshes every 10 minutes (`BOUTIQUE_RANK_EVERY_S`, 0 = only on its *Re-rank now* button). The planner has no unrestricted shell or Docker access: the only way it can inject a fault is a catalogue attack that passed the policy check and a human approved.
 
 ## Agent 2: the Reporter
 
@@ -329,7 +332,7 @@ Over 130 tests covering the safety rules, the watchdog's abort conditions, every
 | Runtime | Docker Compose |
 | Language | Python 3.11+ |
 | Libraries | pydantic (schema validation), networkx (graph analysis), matplotlib (graph rendering), streamlit (dashboard), requests, PyYAML, locust, pytest, ruff |
-| AI models | Day 2 — the planner and analyst (configured through `LLM_API_KEY` in `.env`) |
+| AI models | Day 2 — the planner (gpt-oss-120b), the reporter (gpt-oss-20b) and remediation (gpt-oss-120b), configured through `LLM_API_KEY` in `.env` |
 | AI assistance | Claude (Anthropic) was used while developing this repository |
 
 ## Troubleshooting
