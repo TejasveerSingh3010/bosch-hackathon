@@ -1,0 +1,37 @@
+{
+  "remediable": false,
+  "declined_reason": "Frontend lacks per-call deadlines for currencyservice; a paused currencyservice causes fatal errors on Home, Cart, Product pages. This weakness can only be fixed by application code changes (adding deadlines and optional handling), not by allowed Compose settings.",
+  "diagnosed_problem": "Pausing currencyservice makes frontend pages fail with high error rate (75%) because currencyservice is a fatal dependency and there are no per-call deadlines.",
+  "evidence": [
+    {
+      "result_id": "pause-currencyservice-123230",
+      "field": "during.error_rate_pct_max",
+      "observed": "75.0",
+      "interpretation": "High error rate during pause indicates fatal impact"
+    }
+  ],
+  "changes": [],
+  "expected_benefit": "",
+  "success_criteria": [],
+  "side_effects": [],
+  "rollback_procedure": "",
+  "validation_experiment": {
+    "target": "currencyservice",
+    "action": "pause",
+    "duration_s": 30,
+    "rps": null,
+    "users": null,
+    "cpus": null,
+    "repeats": 3
+  },
+  "id": "rem-20261011-123315",
+  "author": "llm:openai/gpt-oss-120b",
+  "created_at": "2026-10-11T12:33:15.937974+05:30",
+  "source_results": [
+    "pause-currencyservice-123230"
+  ],
+  "policy_problems": [
+    "agent declined: Frontend lacks per-call deadlines for currencyservice; a paused currencyservice causes fatal errors on Home, Cart, Product pages. This weakness can only be fixed by application code changes (adding deadlines and optional handling), not by allowed Compose settings."
+  ],
+  "trace_id": null
+}

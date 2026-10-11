@@ -1,0 +1,57 @@
+diff --git a/src/frontend/handlers.go b/src/frontend/handlers.go
+--- a/src/frontend/handlers.go
++++ b/src/frontend/handlers.go
+@@ -61,8 +61,8 @@
+ 	log.WithField("currency", currentCurrency(r)).Info("home")
+ 	currencies, err := fe.getCurrencies(r.Context())
+ 	if err != nil {
+-		renderHTTPError(log, r, w, errors.Wrap(err, "could not retrieve currencies"), http.StatusInternalServerError)
+-		return
++		log.WithField("error", err).Warn("could not retrieve currencies, proceeding without")
++		currencies = []string{}
+ 	}
+ 	products, err := fe.getProducts(r.Context())
+ 	if err != nil {
+@@ -158,8 +158,8 @@
+ 	}
+ 	currencies, err := fe.getCurrencies(r.Context())
+ 	if err != nil {
+-		renderHTTPError(log, r, w, errors.Wrap(err, "could not retrieve currencies"), http.StatusInternalServerError)
+-		return
++		log.WithField("error", err).Warn("could not retrieve currencies, proceeding without")
++		currencies = []string{}
+ 	}
+ 
+ 	cart, err := fe.getCart(r.Context(), sessionID(r))
+@@ -170,8 +170,8 @@
+ 
+ 	price, err := fe.convertCurrency(r.Context(), p.GetPriceUsd(), currentCurrency(r))
+ 	if err != nil {
+-		renderHTTPError(log, r, w, errors.Wrap(err, "failed to convert currency"), http.StatusInternalServerError)
+-		return
++		log.WithField("error", err).Warn("currency conversion failed, using original price")
++		price = p.GetPriceUsd()
+ 	}
+ 
+ 	// ignores the error retrieving recommendations since it is not critical
+diff --git a/src/frontend/rpc.go b/src/frontend/rpc.go
+--- a/src/frontend/rpc.go
++++ b/src/frontend/rpc.go
+@@ -28,6 +28,8 @@
+ )
+ 
+ func (fe *frontendServer) getCurrencies(ctx context.Context) ([]string, error) {
++	ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
++	defer cancel()
+ 	currs, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).
+ 		GetSupportedCurrencies(ctx, &pb.Empty{})
+ 	if err != nil {
+@@ -78,6 +80,8 @@
+ 	if avoidNoopCurrencyConversionRPC && money.GetCurrencyCode() == currency {
+ 		return money, nil
+ 	}
++	ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
++	defer cancel()
+ 	return pb.NewCurrencyServiceClient(fe.currencySvcConn).
+ 		Convert(ctx, &pb.CurrencyConversionRequest{
+ 			From:   money,

@@ -1,0 +1,95 @@
+{
+  "remediable": true,
+  "declined_reason": "",
+  "diagnosed_problem": "Frontend hangs and returns HTTP 500 when currencyservice is paused because gRPC calls have no per-call deadline and currency data is treated as fatal.",
+  "evidence": [
+    {
+      "result_id": "pause-currencyservice-115903",
+      "field": "during.error_rate_pct_max",
+      "observed": "75.0",
+      "interpretation": "High error rate caused by frontend hanging on currencyservice pause."
+    }
+  ],
+  "edits": [
+    {
+      "service": "frontend",
+      "file": "rpc.go",
+      "function": "getCurrencies",
+      "original": "\tcurrs, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).\n\t\tGetSupportedCurrencies(ctx, &pb.Empty{})",
+      "replacement": "\tctx, cancel := context.WithTimeout(ctx, 1*time.Second)\n\tdefer cancel()\n\tcurrs, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).\n\t\tGetSupportedCurrencies(ctx, &pb.Empty{})",
+      "purpose": "Add a per-call deadline to prevent indefinite hangs when currencyservice is paused."
+    },
+    {
+      "service": "frontend",
+      "file": "rpc.go",
+      "function": "convertCurrency",
+      "original": "\treturn pb.NewCurrencyServiceClient(fe.currencySvcConn).\n\t\tConvert(ctx, &pb.CurrencyConversionRequest{\n\t\t\tFrom:   money,\n\t\t\tToCode: currency})",
+      "replacement": "\tctx, cancel := context.WithTimeout(ctx, 1*time.Second)\n\tdefer cancel()\n\treturn pb.NewCurrencyServiceClient(fe.currencySvcConn).\n\t\tConvert(ctx, &pb.CurrencyConversionRequest{\n\t\t\tFrom:   money,\n\t\t\tToCode: currency})",
+      "purpose": "Add a per-call deadline to the currency conversion RPC to avoid hanging calls."
+    },
+    {
+      "service": "frontend",
+      "file": "handlers.go",
+      "function": "homeHandler",
+      "original": "\tcurrencies, err := fe.getCurrencies(r.Context())\n\tif err != nil {\n\t\trenderHTTPError(log, r, w, errors.Wrap(err, \"could not retrieve currencies\"), http.StatusInternalServerError)\n\t\treturn\n\t}",
+      "replacement": "\tcurrencies, err := fe.getCurrencies(r.Context())\n\tif err != nil {\n\t\tlog.WithField(\"error\", err).Warn(\"could not retrieve currencies, proceeding without\")\n\t\tcurrencies = []string{}\n\t}",
+      "purpose": "Treat missing currency data as optional on Home page, logging the error and rendering without it."
+    },
+    {
+      "service": "frontend",
+      "file": "handlers.go",
+      "function": "productHandler",
+      "original": "\tcurrencies, err := fe.getCurrencies(r.Context())\n\tif err != nil {\n\t\trenderHTTPError(log, r, w, errors.Wrap(err, \"could not retrieve currencies\"), http.StatusInternalServerError)\n\t\treturn\n\t}",
+      "replacement": "\tcurrencies, err := fe.getCurrencies(r.Context())\n\tif err != nil {\n\t\tlog.WithField(\"error\", err).Warn(\"could not retrieve currencies, proceeding without\")\n\t\tcurrencies = []string{}\n\t}",
+      "purpose": "Make currency list optional on Product page, avoiding fatal errors when currencyservice is down."
+    },
+    {
+      "service": "frontend",
+      "file": "handlers.go",
+      "function": "productHandler",
+      "original": "\tprice, err := fe.convertCurrency(r.Context(), p.GetPriceUsd(), currentCurrency(r))\n\tif err != nil {\n\t\trenderHTTPError(log, r, w, errors.Wrap(err, \"failed to convert currency\"), http.StatusInternalServerError)\n\t\treturn\n\t}",
+      "replacement": "\tprice, err := fe.convertCurrency(r.Context(), p.GetPriceUsd(), currentCurrency(r))\n\tif err != nil {\n\t\tlog.WithField(\"error\", err).Warn(\"currency conversion failed, using original price\")\n\t\tprice = p.GetPriceUsd()\n\t}",
+      "purpose": "Fall back to original price if currency conversion fails, preventing page crashes."
+    }
+  ],
+  "expected_benefit": "Pages will continue to render even when currencyservice is paused, reducing error rate and latency dramatically.",
+  "success_criteria": [
+    {
+      "metric": "during_error_rate_max",
+      "min_improvement_pct": 70.0
+    }
+  ],
+  "side_effects": [
+    "Pages may show no currency selector and prices in default currency when currencyservice is unavailable."
+  ],
+  "validation_experiment": {
+    "target": "currencyservice",
+    "action": "pause",
+    "duration_s": 30,
+    "rps": null,
+    "users": null,
+    "cpus": null,
+    "repeats": 3
+  },
+  "id": "rem-20261011-120256",
+  "author": "llm:openai/gpt-oss-120b",
+  "created_at": "2026-10-11T12:02:56.558907+05:30",
+  "source_results": [
+    "pause-currencyservice-115903"
+  ],
+  "responds_to": "rem-20261011-115944",
+  "source_commit": "5b608cb1dfe317d05e4f1bb8c99b7618452fde87",
+  "patch": "diff --git a/src/frontend/handlers.go b/src/frontend/handlers.go\n--- a/src/frontend/handlers.go\n+++ b/src/frontend/handlers.go\n@@ -61,8 +61,8 @@\n \tlog.WithField(\"currency\", currentCurrency(r)).Info(\"home\")\n \tcurrencies, err := fe.getCurrencies(r.Context())\n \tif err != nil {\n-\t\trenderHTTPError(log, r, w, errors.Wrap(err, \"could not retrieve currencies\"), http.StatusInternalServerError)\n-\t\treturn\n+\t\tlog.WithField(\"error\", err).Warn(\"could not retrieve currencies, proceeding without\")\n+\t\tcurrencies = []string{}\n \t}\n \tproducts, err := fe.getProducts(r.Context())\n \tif err != nil {\n@@ -158,8 +158,8 @@\n \t}\n \tcurrencies, err := fe.getCurrencies(r.Context())\n \tif err != nil {\n-\t\trenderHTTPError(log, r, w, errors.Wrap(err, \"could not retrieve currencies\"), http.StatusInternalServerError)\n-\t\treturn\n+\t\tlog.WithField(\"error\", err).Warn(\"could not retrieve currencies, proceeding without\")\n+\t\tcurrencies = []string{}\n \t}\n \n \tcart, err := fe.getCart(r.Context(), sessionID(r))\n@@ -170,8 +170,8 @@\n \n \tprice, err := fe.convertCurrency(r.Context(), p.GetPriceUsd(), currentCurrency(r))\n \tif err != nil {\n-\t\trenderHTTPError(log, r, w, errors.Wrap(err, \"failed to convert currency\"), http.StatusInternalServerError)\n-\t\treturn\n+\t\tlog.WithField(\"error\", err).Warn(\"currency conversion failed, using original price\")\n+\t\tprice = p.GetPriceUsd()\n \t}\n \n \t// ignores the error retrieving recommendations since it is not critical\ndiff --git a/src/frontend/rpc.go b/src/frontend/rpc.go\n--- a/src/frontend/rpc.go\n+++ b/src/frontend/rpc.go\n@@ -28,6 +28,8 @@\n )\n \n func (fe *frontendServer) getCurrencies(ctx context.Context) ([]string, error) {\n+\tctx, cancel := context.WithTimeout(ctx, 1*time.Second)\n+\tdefer cancel()\n \tcurrs, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).\n \t\tGetSupportedCurrencies(ctx, &pb.Empty{})\n \tif err != nil {\n@@ -78,6 +80,8 @@\n \tif avoidNoopCurrencyConversionRPC && money.GetCurrencyCode() == currency {\n \t\treturn money, nil\n \t}\n+\tctx, cancel := context.WithTimeout(ctx, 1*time.Second)\n+\tdefer cancel()\n \treturn pb.NewCurrencyServiceClient(fe.currencySvcConn).\n \t\tConvert(ctx, &pb.CurrencyConversionRequest{\n \t\t\tFrom:   money,\n",
+  "build": {
+    "status": "passed",
+    "detail": "gofmt and go build succeeded in golang:1.27.0-alpine"
+  },
+  "policy_problems": [],
+  "trace_id": null,
+  "critique": [
+    "review: src/frontend/rpc.go:getCurrencies – the added 100 ms timeout is too aggressive and will turn normal, healthy calls into failures; use a longer timeout (e.g., 1 s) or make it configurable so the success path isn’t altered.",
+    "review: src/frontend/rpc.go:convertCurrency – same overly‑short 100 ms deadline; increase it to a safe value or make it configurable.",
+    "review: src/frontend/rpc.go – missing import for the \"time\" package after adding context.WithTimeout calls; add \"time\" to the import list."
+  ],
+  "revised": true
+}

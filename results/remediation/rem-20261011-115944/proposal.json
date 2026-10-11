@@ -1,0 +1,49 @@
+{
+  "remediable": false,
+  "declined_reason": "The pause of the currencyservice causes frontend requests to hang because the frontend has no per-call deadlines or fallback for currencyservice. This is a code-level issue; configuration changes (restart policy, resources, or environment) cannot mitigate a pause-induced hang.",
+  "diagnosed_problem": "Pausing currencyservice leads to 75% error rate and >3000 ms latency on Home, Product, and Cart pages. The frontend lacks per-call deadlines, so a hung dependency blocks request handling.",
+  "evidence": [
+    {
+      "result_id": "pause-currencyservice-115903",
+      "field": "during.error_rate_pct_max",
+      "observed": "75.0",
+      "interpretation": "Error rate far exceeds the 20% abort threshold during the pause."
+    },
+    {
+      "result_id": "pause-currencyservice-115903",
+      "field": "during.p95_ms_max",
+      "observed": "3009.1",
+      "interpretation": "95th‑percentile latency spikes above the 2000 ms abort limit."
+    },
+    {
+      "result_id": "pause-currencyservice-115903",
+      "field": "during.failed_endpoints",
+      "observed": "[\"Cart\", \"Home\", \"Product\"]",
+      "interpretation": "All user‑visible pages that depend on currencyservice fail."
+    }
+  ],
+  "changes": [],
+  "expected_benefit": "",
+  "success_criteria": [],
+  "side_effects": [],
+  "rollback_procedure": "",
+  "validation_experiment": {
+    "target": "currencyservice",
+    "action": "pause",
+    "duration_s": 0,
+    "rps": null,
+    "users": null,
+    "cpus": null,
+    "repeats": 1
+  },
+  "id": "rem-20261011-115944",
+  "author": "llm:openai/gpt-oss-120b",
+  "created_at": "2026-10-11T11:59:44.359315+05:30",
+  "source_results": [
+    "pause-currencyservice-115903"
+  ],
+  "policy_problems": [
+    "agent declined: The pause of the currencyservice causes frontend requests to hang because the frontend has no per-call deadlines or fallback for currencyservice. This is a code-level issue; configuration changes (restart policy, resources, or environment) cannot mitigate a pause-induced hang."
+  ],
+  "trace_id": null
+}

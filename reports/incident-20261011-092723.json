@@ -1,0 +1,149 @@
+{
+  "id": "incident-20261011-092723",
+  "kind": "incident",
+  "generated_at": "2026-10-11T09:36:06.828590+05:30",
+  "narrator": "stub",
+  "title": "Incident report: cartservice (incident-20261011-092723)",
+  "verdict": null,
+  "target": "cartservice",
+  "action": null,
+  "timings": {},
+  "phases": {
+    "during": {
+      "samples": 19,
+      "seconds": 520.6,
+      "error_rate_pct_mean": 0.0,
+      "error_rate_pct_max": 0.0,
+      "p95_ms_mean": 158.33,
+      "p95_ms_max": 297.31,
+      "failed_endpoints": [],
+      "error_types": {}
+    }
+  },
+  "analysis": {
+    "headline": "Incident: cartservice failed first; pages affected: none",
+    "severity": "minor",
+    "summary": "Agent 2 detected a failure on its own while no experiment was running. Failure point: cartservice went down (health check: gRPC deadline exceeded) at 09:35:59; no page probe failed. Error rate peaked at 0% and p95 latency at 297.3 ms.",
+    "failure_point": "cartservice went down (health check: gRPC deadline exceeded) at 09:35:59; no page probe failed.",
+    "origin": {
+      "component": "cartservice",
+      "first_degraded_at": "2026-10-11T09:35:59.496626+05:30",
+      "basis": "observed",
+      "evidence": [
+        "E1"
+      ],
+      "note": "first service to go down; no experiment was running, so the cause is not known"
+    },
+    "propagation": [
+      {
+        "component": "cartservice",
+        "kind": "origin",
+        "at": "2026-10-11T09:35:59.496626+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E1"
+        ],
+        "note": "cartservice went down (health check: gRPC deadline exceeded)"
+      }
+    ],
+    "what_worked": [],
+    "anomalies": [
+      {
+        "text": "online-boutique-frontend-1: no error lines in the window (908 lines read)",
+        "evidence": [],
+        "basis": "unknown"
+      }
+    ]
+  },
+  "evidence": {
+    "kind": "incident",
+    "subject": "incident-20261011-092723",
+    "window_start": "2026-10-11T09:27:23.583887+05:30",
+    "window_end": "2026-10-11T09:36:04.174237+05:30",
+    "experiment": null,
+    "timeline": [
+      {
+        "id": "E1",
+        "t": "2026-10-11T09:35:59.496626+05:30",
+        "source": "telemetry",
+        "event": "cartservice went down (health check: gRPC deadline exceeded)",
+        "key": "service_down:cartservice"
+      },
+      {
+        "id": "E2",
+        "t": "2026-10-11T09:36:01.262309+05:30",
+        "source": "telemetry",
+        "event": "cartservice is healthy again",
+        "key": "service_up:cartservice"
+      }
+    ],
+    "refs": {
+      "service_down:cartservice": "E1",
+      "service_up:cartservice": "E2"
+    },
+    "log_findings": [],
+    "graph": {
+      "service": "cartservice",
+      "callers": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "direct_callers": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [
+        "redis-cart"
+      ],
+      "criticality_score": 61.7,
+      "criticality_reason": "2 service(s) depend on it; on the checkout path; single point of failure",
+      "on_checkout_path": true,
+      "single_point_of_failure": true,
+      "expected_pages": [
+        "Home",
+        "Product",
+        "Cart",
+        "Checkout"
+      ]
+    },
+    "facts": {
+      "samples": 19,
+      "first_page_failure": {},
+      "page_recovered": {},
+      "first_service_down": {
+        "cartservice": "2026-10-11T09:35:59.496626+05:30"
+      },
+      "failed_pages": [],
+      "pages_never_failed": [
+        "Cart",
+        "Checkout",
+        "Home",
+        "Product"
+      ],
+      "services_down_ever": [
+        "cartservice"
+      ],
+      "error_types": {},
+      "peak_error_rate_pct": 0.0,
+      "peak_p95_ms": 297.3,
+      "restart_delta": 0,
+      "container_for_service": {
+        "frontend": "online-boutique-frontend-1",
+        "productcatalogservice": "online-boutique-productcatalogservice-1",
+        "currencyservice": "online-boutique-currencyservice-1",
+        "cartservice": "online-boutique-cartservice-1",
+        "redis-cart": "online-boutique-redis-cart-1",
+        "shippingservice": "online-boutique-shippingservice-1",
+        "checkoutservice": "online-boutique-checkoutservice-1",
+        "paymentservice": "online-boutique-paymentservice-1",
+        "emailservice": "online-boutique-emailservice-1",
+        "adservice": "online-boutique-adservice-1",
+        "recommendationservice": "online-boutique-recommendationservice-1",
+        "loadgenerator": "online-boutique-loadgenerator-1"
+      }
+    },
+    "notes": [
+      "online-boutique-frontend-1: no error lines in the window (908 lines read)"
+    ]
+  }
+}

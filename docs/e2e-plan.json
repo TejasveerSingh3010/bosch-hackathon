@@ -1,0 +1,10 @@
+{
+  "id": "e2e-pause-productcatalog",
+  "target": "productcatalogservice",
+  "action": "pause",
+  "params": {},
+  "duration_s": 45,
+  "abort_if": { "error_rate": 0.2, "p95_ms": 2000 },
+  "rollback": "restart",
+  "reason": "End-to-end test: freeze the catalogue so Home, Product and Checkout hang while Cart stays up"
+}

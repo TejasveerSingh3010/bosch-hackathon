@@ -1,0 +1,332 @@
+{
+  "id": "kill-adservice-115329",
+  "kind": "experiment",
+  "generated_at": "2026-10-11T11:54:29.066617+05:30",
+  "narrator": "llm:openai/gpt-oss-20b",
+  "title": "Failure report: kill on adservice (kill-adservice-115329)",
+  "verdict": "completed",
+  "target": "adservice",
+  "action": "kill",
+  "timings": {
+    "detection_seconds": null,
+    "impact_seconds": 27.6,
+    "recovery_seconds": 0.9
+  },
+  "phases": {
+    "before": {
+      "samples": 30,
+      "seconds": 58.4,
+      "error_rate_pct_mean": 0.0,
+      "error_rate_pct_max": 0.0,
+      "p95_ms_mean": 151.65,
+      "p95_ms_max": 160.91,
+      "failed_endpoints": [],
+      "error_types": {}
+    },
+    "during": {
+      "samples": 14,
+      "seconds": 26.1,
+      "error_rate_pct_mean": 0.0,
+      "error_rate_pct_max": 0.0,
+      "p95_ms_mean": 157.06,
+      "p95_ms_max": 160.71,
+      "failed_endpoints": [],
+      "error_types": {}
+    },
+    "after": {
+      "samples": 1,
+      "seconds": 0.0,
+      "error_rate_pct_mean": 0.0,
+      "error_rate_pct_max": 0.0,
+      "p95_ms_mean": 155.33,
+      "p95_ms_max": 155.33,
+      "failed_endpoints": [],
+      "error_types": {}
+    }
+  },
+  "analysis": {
+    "headline": "Adservice kill experiment: container termination and graceful frontend degradation",
+    "severity": "major",
+    "summary": "An intentional kill of the adservice container caused connection refusals and timeouts in the frontend during ad requests, but no pages failed. Docker automatically restarted the container after 27 s and the runner recovered the application health 0.9 s later. No probes detected the failure and no self‑healing was triggered.",
+    "failure_point": "Adservice container was killed (signal 9).",
+    "origin": {
+      "component": "adservice",
+      "first_degraded_at": "2026-10-11T11:53:41.183347+05:30",
+      "basis": "observed",
+      "evidence": [
+        "E5"
+      ],
+      "note": ""
+    },
+    "propagation": [],
+    "what_worked": [
+      {
+        "text": "Frontend handled adservice downtime gracefully; no page failures were observed.",
+        "evidence": [
+          "E3",
+          "E6"
+        ],
+        "basis": "observed"
+      },
+      {
+        "text": "Docker automatically restarted the adservice container after it was killed.",
+        "evidence": [
+          "E7"
+        ],
+        "basis": "observed"
+      },
+      {
+        "text": "The runner rolled back and the application became healthy again after 0.9 seconds.",
+        "evidence": [
+          "E8",
+          "E10"
+        ],
+        "basis": "observed"
+      }
+    ],
+    "anomalies": [
+      {
+        "text": "No probe failure was observed while adservice was down.",
+        "evidence": [],
+        "basis": "observed"
+      },
+      {
+        "text": "Detection of the adservice failure was delayed/missing.",
+        "evidence": [],
+        "basis": "observed"
+      },
+      {
+        "text": "Recovery took approximately 27 seconds from the time of failure.",
+        "evidence": [
+          "E7",
+          "E10"
+        ],
+        "basis": "inferred"
+      },
+      {
+        "text": "The adservice did not self‑heal automatically.",
+        "evidence": [],
+        "basis": "observed"
+      }
+    ]
+  },
+  "evidence": {
+    "kind": "experiment",
+    "subject": "kill-adservice-115329",
+    "window_start": "2026-10-11T11:52:40.799815+05:30",
+    "window_end": "2026-10-11T11:54:39.278222+05:30",
+    "experiment": {
+      "id": "kill-adservice-115329",
+      "target": "adservice",
+      "action": "kill",
+      "params": {},
+      "duration_s": 25,
+      "reason": "A sudden crash of adservice is recovered automatically by Docker's restart policy and callers degrade gracefully meanwhile.",
+      "verdict": "completed",
+      "abort_reason": null,
+      "container": "online-boutique-adservice-1",
+      "service": "adservice",
+      "injected_at": "2026-10-11T11:53:40.799815+05:30",
+      "detected_at": null,
+      "rolled_back_at": "2026-10-11T11:54:08.410628+05:30",
+      "recovered_at": "2026-10-11T11:54:09.278222+05:30",
+      "detection_seconds": null,
+      "impact_seconds": 27.6,
+      "recovery_seconds": 0.9,
+      "self_healed": false,
+      "restart_count_delta": 0,
+      "thresholds_used": {
+        "error_rate_pct": 20.0,
+        "p95_ms": 2000.0,
+        "max_collateral_unready": 1.0
+      },
+      "baseline": {
+        "error_rate_pct": 0.0,
+        "sample_p95_ms": {
+          "mean": 159.99,
+          "p95": 212.22,
+          "p99": 255.25,
+          "max": 255.25
+        }
+      },
+      "observations": [
+        "no probe failure was observed while the failure was in place - the application tolerated it (or the probes do not cover the affected path)",
+        "rollback: running again"
+      ],
+      "errors": []
+    },
+    "timeline": [
+      {
+        "id": "E1",
+        "t": "2026-10-11T11:53:40+05:30",
+        "source": "docker",
+        "event": "docker: kill on adservice (signal 9)",
+        "key": "docker:kill:adservice"
+      },
+      {
+        "id": "E2",
+        "t": "2026-10-11T11:53:40+05:30",
+        "source": "docker",
+        "event": "docker: die on adservice (exit 137)",
+        "key": "docker:die:adservice"
+      },
+      {
+        "id": "E3",
+        "t": "2026-10-11T06:23:40.332174Z",
+        "source": "logs",
+        "event": "online-boutique-frontend-1 logged connection_refused x94: {\"error\":\"failed to get ads: rpc error: code = Unavailable desc = connection error: desc = \\\"transport: Error while dialing: dial tcp 172.18.0.2:9555: connect: connection refused\\\"\",\"http.req.id\":\"25ddcabe-189b-4b85-a...",
+        "key": "log:online-boutique-frontend-1:connection_refused"
+      },
+      {
+        "id": "E4",
+        "t": "2026-10-11T11:53:40.799815+05:30",
+        "source": "runner",
+        "event": "runner injected kill on online-boutique-adservice-1",
+        "key": "runner:injected"
+      },
+      {
+        "id": "E5",
+        "t": "2026-10-11T11:53:41.183347+05:30",
+        "source": "telemetry",
+        "event": "adservice went down (container exited (137))",
+        "key": "service_down:adservice"
+      },
+      {
+        "id": "E6",
+        "t": "2026-10-11T06:24:02.263568Z",
+        "source": "logs",
+        "event": "online-boutique-frontend-1 logged timeout x20: {\"error\":\"failed to get ads: rpc error: code = Unavailable desc = connection error: desc = \\\"transport: Error while dialing: dial tcp 172.18.0.2:9555: i/o timeout\\\"\",\"http.req.id\":\"9913336f-1c48-4c04-b85b-f1098df5232f...",
+        "key": "log:online-boutique-frontend-1:timeout"
+      },
+      {
+        "id": "E7",
+        "t": "2026-10-11T11:54:07+05:30",
+        "source": "docker",
+        "event": "docker: start on adservice",
+        "key": "docker:start:adservice"
+      },
+      {
+        "id": "E8",
+        "t": "2026-10-11T11:54:08.410628+05:30",
+        "source": "runner",
+        "event": "runner rolled back (running again)",
+        "key": "runner:rollback"
+      },
+      {
+        "id": "E9",
+        "t": "2026-10-11T06:24:09.082551Z",
+        "source": "logs",
+        "event": "online-boutique-adservice-1 logged unavailable x2: {\"instant\":{\"epochSecond\":1791699848,\"nanoOfSecond\":883305099},\"thread\":\"Thread-0\",\"level\":\"INFO\",\"loggerName\":\"hipstershop.AdService\",\"message\":\"Stats enabled, but temporarily unavailable\",\"endOfBatch\":false,\"loggerF...",
+        "key": "log:online-boutique-adservice-1:unavailable"
+      },
+      {
+        "id": "E10",
+        "t": "2026-10-11T11:54:09.278222+05:30",
+        "source": "runner",
+        "event": "application healthy again (two clean samples in a row)",
+        "key": "runner:recovered"
+      },
+      {
+        "id": "E11",
+        "t": "2026-10-11T11:54:11.310463+05:30",
+        "source": "telemetry",
+        "event": "adservice is healthy again",
+        "key": "service_up:adservice"
+      }
+    ],
+    "refs": {
+      "docker:kill:adservice": "E1",
+      "docker:die:adservice": "E2",
+      "log:online-boutique-frontend-1:connection_refused": "E3",
+      "runner:injected": "E4",
+      "service_down:adservice": "E5",
+      "log:online-boutique-frontend-1:timeout": "E6",
+      "docker:start:adservice": "E7",
+      "runner:rollback": "E8",
+      "log:online-boutique-adservice-1:unavailable": "E9",
+      "runner:recovered": "E10",
+      "service_up:adservice": "E11"
+    },
+    "log_findings": [
+      {
+        "container": "online-boutique-adservice-1",
+        "service": "adservice",
+        "kind": "unavailable",
+        "count": 2,
+        "first_at": "2026-10-11T06:24:09.082551Z",
+        "first_line": "{\"instant\":{\"epochSecond\":1791699848,\"nanoOfSecond\":883305099},\"thread\":\"Thread-0\",\"level\":\"INFO\",\"loggerName\":\"hipstershop.AdService\",\"message\":\"Stats enabled, but temporarily unavailable\",\"endOfBatch\":false,\"loggerF...",
+        "last_line": "{\"instant\":{\"epochSecond\":1791699849,\"nanoOfSecond\":82474356},\"thread\":\"Thread-0\",\"level\":\"INFO\",\"loggerName\":\"hipstershop.AdService\",\"message\":\"Tracing enabled but temporarily unavailable\",\"endOfBatch\":false,\"loggerF..."
+      },
+      {
+        "container": "online-boutique-frontend-1",
+        "service": "frontend",
+        "kind": "connection_refused",
+        "count": 94,
+        "first_at": "2026-10-11T06:23:40.332174Z",
+        "first_line": "{\"error\":\"failed to get ads: rpc error: code = Unavailable desc = connection error: desc = \\\"transport: Error while dialing: dial tcp 172.18.0.2:9555: connect: connection refused\\\"\",\"http.req.id\":\"25ddcabe-189b-4b85-a...",
+        "last_line": "{\"error\":\"failed to get ads: rpc error: code = Unavailable desc = connection error: desc = \\\"transport: Error while dialing: dial tcp 172.18.0.2:9555: connect: connection refused\\\"\",\"http.req.id\":\"671e394b-5e02-4db6-9..."
+      },
+      {
+        "container": "online-boutique-frontend-1",
+        "service": "frontend",
+        "kind": "timeout",
+        "count": 20,
+        "first_at": "2026-10-11T06:24:02.263568Z",
+        "first_line": "{\"error\":\"failed to get ads: rpc error: code = Unavailable desc = connection error: desc = \\\"transport: Error while dialing: dial tcp 172.18.0.2:9555: i/o timeout\\\"\",\"http.req.id\":\"9913336f-1c48-4c04-b85b-f1098df5232f...",
+        "last_line": "{\"error\":\"failed to get ads: rpc error: code = Unavailable desc = connection error: desc = \\\"transport: Error while dialing: dial tcp 172.18.0.2:9555: i/o timeout\\\"\",\"http.req.id\":\"7dc881e9-71a1-4bc2-a33b-77ed376f17b3..."
+      }
+    ],
+    "graph": {
+      "service": "adservice",
+      "callers": [
+        "frontend"
+      ],
+      "direct_callers": [
+        "frontend"
+      ],
+      "dependencies": [],
+      "criticality_score": 13.3,
+      "criticality_reason": "1 service(s) depend on it",
+      "on_checkout_path": false,
+      "single_point_of_failure": false,
+      "expected_pages": []
+    },
+    "facts": {
+      "samples": 50,
+      "first_page_failure": {},
+      "page_recovered": {},
+      "first_service_down": {
+        "adservice": "2026-10-11T11:53:41.183347+05:30"
+      },
+      "failed_pages": [],
+      "pages_never_failed": [
+        "Cart",
+        "Checkout",
+        "Home",
+        "Product"
+      ],
+      "services_down_ever": [
+        "adservice"
+      ],
+      "error_types": {},
+      "peak_error_rate_pct": 0.0,
+      "peak_p95_ms": 167.5,
+      "restart_delta": 0,
+      "container_for_service": {
+        "frontend": "online-boutique-frontend-1",
+        "productcatalogservice": "online-boutique-productcatalogservice-1",
+        "currencyservice": "online-boutique-currencyservice-1",
+        "cartservice": "online-boutique-cartservice-1",
+        "redis-cart": "online-boutique-redis-cart-1",
+        "shippingservice": "online-boutique-shippingservice-1",
+        "checkoutservice": "online-boutique-checkoutservice-1",
+        "paymentservice": "online-boutique-paymentservice-1",
+        "emailservice": "online-boutique-emailservice-1",
+        "adservice": "online-boutique-adservice-1",
+        "recommendationservice": "online-boutique-recommendationservice-1",
+        "loadgenerator": "online-boutique-loadgenerator-1"
+      }
+    },
+    "notes": []
+  }
+}

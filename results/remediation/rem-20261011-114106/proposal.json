@@ -1,0 +1,37 @@
+{
+  "remediable": false,
+  "declined_reason": "The observed weakness is that shippingservice is a fatal dependency for the cart page and the frontend has no per‑call deadline for its gRPC call. When a network partition isolates shippingservice, the cart page times out and error rate spikes. The documentation states this is not fixable by configuration (requires code changes to add deadlines). No allowed Compose setting (restart, resources, or environment) can mitigate the fault.",
+  "diagnosed_problem": "Network partition of shippingservice makes it unreachable, causing Cart page failures (error rate 25%, p95 3017 ms). Lack of per‑call deadline means the frontend does not fail fast. This weakness can only be addressed by adding deadlines in code.",
+  "evidence": [
+    {
+      "result_id": "network_partition-shippingservice-114018",
+      "field": "during.error_rate_pct_max",
+      "observed": "25.0",
+      "interpretation": "Error rate exceeded abort threshold of 20%"
+    }
+  ],
+  "changes": [],
+  "expected_benefit": "None – improvement requires application code changes (adding per‑call deadlines).",
+  "success_criteria": [],
+  "side_effects": [],
+  "rollback_procedure": "No configuration changes were applied, so no rollback needed.",
+  "validation_experiment": {
+    "target": "shippingservice",
+    "action": "network_partition",
+    "duration_s": 30,
+    "rps": null,
+    "users": null,
+    "cpus": null,
+    "repeats": 3
+  },
+  "id": "rem-20261011-114106",
+  "author": "llm:openai/gpt-oss-120b",
+  "created_at": "2026-10-11T11:41:06.666220+05:30",
+  "source_results": [
+    "network_partition-shippingservice-114018"
+  ],
+  "policy_problems": [
+    "agent declined: The observed weakness is that shippingservice is a fatal dependency for the cart page and the frontend has no per‑call deadline for its gRPC call. When a network partition isolates shippingservice, the cart page times out and error rate spikes. The documentation states this is not fixable by configuration (requires code changes to add deadlines). No allowed Compose setting (restart, resources, or environment) can mitigate the fault."
+  ],
+  "trace_id": null
+}

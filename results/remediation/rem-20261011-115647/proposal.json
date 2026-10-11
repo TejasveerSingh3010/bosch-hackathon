@@ -1,0 +1,64 @@
+{
+  "remediable": true,
+  "declined_reason": "",
+  "diagnosed_problem": "Frontend does not quickly recover after adservice is killed because the gRPC client backs off and propagates the error, causing a 27‑second outage before ads resume.",
+  "evidence": [
+    {
+      "result_id": "kill-adservice-115329",
+      "field": "during.error_rate_pct_max",
+      "observed": "0.0",
+      "interpretation": "No increase in error rate was observed during the failure, indicating the page continued to render but the gRPC client remained in backoff."
+    }
+  ],
+  "edits": [
+    {
+      "service": "frontend",
+      "file": "rpc.go",
+      "function": "getAd",
+      "original": "func (fe *frontendServer) getAd(ctx context.Context, ctxKeys []string) ([]*pb.Ad, error) {\n\tctx, cancel := context.WithTimeout(ctx, time.Millisecond*100)\n\tdefer cancel()\n\n\tresp, err := pb.NewAdServiceClient(fe.adSvcConn).GetAds(ctx, &pb.AdRequest{\n\t\tContextKeys: ctxKeys,\n\t})\n\treturn resp.GetAds(), errors.Wrap(err, \"failed to get ads\")\n}",
+      "replacement": "func (fe *frontendServer) getAd(ctx context.Context, ctxKeys []string) ([]*pb.Ad, error) {\n\tctx, cancel := context.WithTimeout(ctx, time.Millisecond*100)\n\tdefer cancel()\n\n\tresp, err := pb.NewAdServiceClient(fe.adSvcConn).GetAds(ctx, &pb.AdRequest{\n\t\tContextKeys: ctxKeys,\n\t})\n\tif err != nil {\n\t\tfe.adSvcConn.ResetConnectBackoff()\n\t\tlog.WithError(err).Warn(\"failed to get ads, fallback to empty\")\n\t\treturn []*pb.Ad{}, nil\n\t}\n\treturn resp.GetAds(), nil\n}",
+      "purpose": "On adservice errors, reset the gRPC client backoff to reconnect quickly, log the failure, and return an empty ad slice so the page renders without ads instead of returning an HTTP 500 or panicking."
+    }
+  ],
+  "expected_benefit": "Resetting the gRPC backoff on adservice errors and falling back to an empty ad list eliminates the long reconnection delay, allowing the frontend to render pages without ads immediately after a kill.",
+  "success_criteria": [
+    {
+      "metric": "recovery_seconds",
+      "min_improvement_pct": 80.0
+    }
+  ],
+  "side_effects": [
+    "Pages will render without ads while adservice is down (fallback behavior).",
+    "The error is logged at WARN level for observability."
+  ],
+  "validation_experiment": {
+    "target": "adservice",
+    "action": "kill",
+    "duration_s": 30,
+    "rps": null,
+    "users": null,
+    "cpus": null,
+    "repeats": 3
+  },
+  "id": "rem-20261011-115647",
+  "author": "llm:openai/gpt-oss-120b",
+  "created_at": "2026-10-11T11:56:47.132793+05:30",
+  "source_results": [
+    "kill-adservice-115329"
+  ],
+  "responds_to": "rem-20261011-115435",
+  "source_commit": "5b608cb1dfe317d05e4f1bb8c99b7618452fde87",
+  "patch": "diff --git a/src/frontend/rpc.go b/src/frontend/rpc.go\n--- a/src/frontend/rpc.go\n+++ b/src/frontend/rpc.go\n@@ -123,5 +123,10 @@\n \tresp, err := pb.NewAdServiceClient(fe.adSvcConn).GetAds(ctx, &pb.AdRequest{\n \t\tContextKeys: ctxKeys,\n \t})\n-\treturn resp.GetAds(), errors.Wrap(err, \"failed to get ads\")\n+\tif err != nil {\n+\t\tfe.adSvcConn.ResetConnectBackoff()\n+\t\tlog.WithError(err).Warn(\"failed to get ads, fallback to empty\")\n+\t\treturn []*pb.Ad{}, nil\n+\t}\n+\treturn resp.GetAds(), nil\n }\n",
+  "build": {
+    "status": "passed",
+    "detail": "gofmt and go build succeeded in golang:1.27.0-alpine"
+  },
+  "policy_problems": [],
+  "trace_id": null,
+  "critique": [
+    "frontend/rpc.go (getAd): an error branch neither logs nor returns the error - it would hide it",
+    "review: src/frontend/rpc.go: getAd may panic because resp is nil when err != nil; need to handle error before accessing resp.",
+    "review: src/frontend/rpc.go: getAd does not log the error after resetting backoff; consider logging for observability."
+  ],
+  "revised": true
+}

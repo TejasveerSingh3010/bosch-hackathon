@@ -1,0 +1,62 @@
+{
+  "remediable": true,
+  "declined_reason": "",
+  "diagnosed_problem": "frontend makes a shipping quote gRPC call without a per‑call deadline; when shippingservice is partitioned the call hangs, causing Cart page timeouts and high error rates.",
+  "evidence": [
+    {
+      "result_id": "network_partition-shippingservice-114018",
+      "field": "during.error_rate_pct_max",
+      "observed": "25.0",
+      "interpretation": "Cart endpoint error rate spikes to 25 % during a shippingservice network partition because the GetQuote call hangs."
+    }
+  ],
+  "edits": [
+    {
+      "service": "frontend",
+      "file": "rpc.go",
+      "function": "getShippingQuote",
+      "original": "\tquote, err := pb.NewShippingServiceClient(fe.shippingSvcConn).GetQuote(ctx,\n\t\t&pb.GetQuoteRequest{\n\t\t\tAddress: nil,\n\t\t\tItems:   items})",
+      "replacement": "\tctx, cancel := context.WithTimeout(ctx, 2*time.Second)\n\tdefer cancel()\n\tquote, err := pb.NewShippingServiceClient(fe.shippingSvcConn).GetQuote(ctx,\n\t\t&pb.GetQuoteRequest{\n\t\t\tAddress: nil,\n\t\t\tItems:   items})",
+      "purpose": "Add a 2 s per‑call deadline to the shipping‑quote RPC so the frontend fails fast when shippingservice is unreachable, reducing latency and error‑rate spikes."
+    }
+  ],
+  "expected_benefit": "Fast failure of the GetQuote RPC limits the duration of Cart page hangs, lowering the observed error‑rate max and p95 latency during shippingservice outages.",
+  "success_criteria": [
+    {
+      "metric": "during_error_rate_max",
+      "min_improvement_pct": 50.0
+    }
+  ],
+  "side_effects": [
+    "When shippingservice is healthy the added 2 s timeout adds negligible overhead.",
+    "If shippingservice is slow but eventually returns, the request may now be cancelled early, causing the Cart page to return an error instead of a delayed response."
+  ],
+  "validation_experiment": {
+    "target": "shippingservice",
+    "action": "network_partition",
+    "duration_s": 30,
+    "rps": null,
+    "users": null,
+    "cpus": null,
+    "repeats": 3
+  },
+  "id": "rem-20261011-114243",
+  "author": "llm:openai/gpt-oss-120b",
+  "created_at": "2026-10-11T11:42:43.730692+05:30",
+  "source_results": [
+    "network_partition-shippingservice-114018"
+  ],
+  "responds_to": "rem-20261011-114106",
+  "source_commit": "5b608cb1dfe317d05e4f1bb8c99b7618452fde87",
+  "patch": "diff --git a/src/frontend/rpc.go b/src/frontend/rpc.go\n--- a/src/frontend/rpc.go\n+++ b/src/frontend/rpc.go\n@@ -85,6 +85,8 @@\n }\n \n func (fe *frontendServer) getShippingQuote(ctx context.Context, items []*pb.CartItem, currency string) (*pb.Money, error) {\n+\tctx, cancel := context.WithTimeout(ctx, 2*time.Second)\n+\tdefer cancel()\n \tquote, err := pb.NewShippingServiceClient(fe.shippingSvcConn).GetQuote(ctx,\n \t\t&pb.GetQuoteRequest{\n \t\t\tAddress: nil,\n",
+  "build": {
+    "status": "passed",
+    "detail": "gofmt and go build succeeded in golang:1.27.0-alpine"
+  },
+  "policy_problems": [],
+  "trace_id": null,
+  "critique": [
+    "review pass failed: rate limited by the Groq API - try again shortly"
+  ],
+  "revised": false
+}

@@ -1,0 +1,20 @@
+{
+  "prompt": "kill adservice for 25 seconds",
+  "interpreted_by": "llm:openai/gpt-oss-120b",
+  "note": "Requested a kill attack on adservice for 25 seconds.",
+  "understood": true,
+  "plan": {
+    "experiment_id": "kill-adservice-115329",
+    "cluster": "online-boutique",
+    "target": "adservice",
+    "action": "kill",
+    "params": {},
+    "hypothesis": "A sudden crash of adservice is recovered automatically by Docker's restart policy and callers degrade gracefully meanwhile.",
+    "expected_observations": "A brief error blip, then automatic restart; pages that do not depend on adservice keep working.",
+    "max_duration_s": 25,
+    "recovery_criteria": "adservice is running again and probe success returns to baseline."
+  },
+  "allowed": true,
+  "reasons": [],
+  "notes": []
+}

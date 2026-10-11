@@ -1,0 +1,337 @@
+{
+  "id": "network_partition-shippingservice-114018",
+  "kind": "experiment",
+  "generated_at": "2026-10-11T11:41:01.040127+05:30",
+  "narrator": "llm:openai/gpt-oss-20b",
+  "title": "Failure report: network_partition on shippingservice (network_partition-shippingservice-114018)",
+  "verdict": "aborted",
+  "target": "shippingservice",
+  "action": "network_partition",
+  "timings": {
+    "detection_seconds": null,
+    "impact_seconds": 7.3,
+    "recovery_seconds": 9.2
+  },
+  "phases": {
+    "before": {
+      "samples": 30,
+      "seconds": 58.2,
+      "error_rate_pct_mean": 0.0,
+      "error_rate_pct_max": 0.0,
+      "p95_ms_mean": 151.86,
+      "p95_ms_max": 164.43,
+      "failed_endpoints": [],
+      "error_types": {}
+    },
+    "during": {
+      "samples": 2,
+      "seconds": 3.6,
+      "error_rate_pct_mean": 25.0,
+      "error_rate_pct_max": 25.0,
+      "p95_ms_mean": 3016.79,
+      "p95_ms_max": 3016.97,
+      "failed_endpoints": [
+        "Cart"
+      ],
+      "error_types": {
+        "timeout": 2
+      }
+    },
+    "after": {
+      "samples": 4,
+      "seconds": 5.9,
+      "error_rate_pct_mean": 6.25,
+      "error_rate_pct_max": 25.0,
+      "p95_ms_mean": 2525.25,
+      "p95_ms_max": 3018.39,
+      "failed_endpoints": [
+        "Cart"
+      ],
+      "error_types": {
+        "timeout": 1
+      }
+    }
+  },
+  "analysis": {
+    "headline": "Network partition on shippingservice caused temporary Cart page failures",
+    "severity": "major",
+    "summary": "A network partition was injected on shippingservice at 11:40:27, leading to gRPC health check failures and Cart page timeouts. The experiment was aborted after 7.3s when the error rate exceeded 20%, the partition was rolled back, and shippingservice returned to healthy status 9.2s later. All other pages remained available.",
+    "failure_point": "shippingservice became unreachable due to network partition, causing health check failure and downstream Cart page timeouts",
+    "origin": {
+      "component": "shippingservice",
+      "first_degraded_at": "2026-10-11T11:40:30.879106+05:30",
+      "basis": "observed",
+      "evidence": [
+        "E4",
+        "E1"
+      ],
+      "note": ""
+    },
+    "propagation": [
+      {
+        "component": "shippingservice",
+        "kind": "service",
+        "at": "2026-10-11T11:40:30.879106+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E4"
+        ],
+        "note": ""
+      },
+      {
+        "component": "Cart",
+        "kind": "page",
+        "at": "2026-10-11T11:40:30.879106+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E3"
+        ],
+        "note": ""
+      }
+    ],
+    "what_worked": [
+      {
+        "text": "Shippingservice became healthy again after rollback",
+        "evidence": [
+          "E6",
+          "E7"
+        ],
+        "basis": "observed"
+      },
+      {
+        "text": "Cart page probe passed again after shippingservice recovery",
+        "evidence": [
+          "E8"
+        ],
+        "basis": "observed"
+      },
+      {
+        "text": "Experiment was aborted once error rate exceeded threshold, preventing further degradation",
+        "evidence": [
+          "E5"
+        ],
+        "basis": "observed"
+      }
+    ],
+    "anomalies": [
+      {
+        "text": "Detection of failure was delayed; error rate exceeded threshold after 7.3s",
+        "evidence": [
+          "E5"
+        ],
+        "basis": "inferred"
+      },
+      {
+        "text": "Recovery took 9.2s, longer than ideal",
+        "evidence": [
+          "E6",
+          "E7"
+        ],
+        "basis": "inferred"
+      },
+      {
+        "text": "No automatic self-healing; rollback required",
+        "evidence": [
+          "E6"
+        ],
+        "basis": "inferred"
+      }
+    ]
+  },
+  "evidence": {
+    "kind": "experiment",
+    "subject": "network_partition-shippingservice-114018",
+    "window_start": "2026-10-11T11:39:27.465427+05:30",
+    "window_end": "2026-10-11T11:41:13.961681+05:30",
+    "experiment": {
+      "id": "network_partition-shippingservice-114018",
+      "target": "shippingservice",
+      "action": "network_partition",
+      "params": {},
+      "duration_s": 30,
+      "reason": "When shippingservice is reachable by no one, callers treat it as down rather than hanging on connections that never complete.",
+      "verdict": "aborted",
+      "abort_reason": "error rate 25.0% exceeded the limit 20.0% for 2 consecutive samples",
+      "container": "online-boutique-shippingservice-1",
+      "service": "shippingservice",
+      "injected_at": "2026-10-11T11:40:27.465427+05:30",
+      "detected_at": null,
+      "rolled_back_at": "2026-10-11T11:40:34.805453+05:30",
+      "recovered_at": "2026-10-11T11:40:43.961681+05:30",
+      "detection_seconds": null,
+      "impact_seconds": 7.3,
+      "recovery_seconds": 9.2,
+      "self_healed": false,
+      "restart_count_delta": 0,
+      "thresholds_used": {
+        "error_rate_pct": 20.0,
+        "p95_ms": 2000.0,
+        "max_collateral_unready": 1.0
+      },
+      "baseline": {
+        "error_rate_pct": 0.0,
+        "sample_p95_ms": {
+          "mean": 171.62,
+          "p95": 285.13,
+          "p99": 345.74,
+          "max": 345.74
+        }
+      },
+      "observations": [
+        "rollback: reconnected online-boutique-shippingservice-1 to online-boutique_default (aliases ['online-boutique-shippingservice-1', 'shippingservice'])"
+      ],
+      "errors": []
+    },
+    "timeline": [
+      {
+        "id": "E1",
+        "t": "2026-10-11T11:40:27.465427+05:30",
+        "source": "runner",
+        "event": "runner injected network_partition on online-boutique-shippingservice-1",
+        "key": "runner:injected"
+      },
+      {
+        "id": "E2",
+        "t": "2026-10-11T06:10:30.544060Z",
+        "source": "logs",
+        "event": "online-boutique-frontend-1 logged error x6: {\"error\":\"failed to get shipping quote: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"22af1538-5cb7-4a53-b792-565c5843dd8a\",\"http.req.method\":\"GET\",\"http.req.path\":\"/cart\",\"message\":\"request error...",
+        "key": "log:online-boutique-frontend-1:error"
+      },
+      {
+        "id": "E3",
+        "t": "2026-10-11T11:40:30.879106+05:30",
+        "source": "telemetry",
+        "event": "Cart page probe started failing (timeout, HTTP 0, 3017 ms)",
+        "key": "page_fail:Cart"
+      },
+      {
+        "id": "E4",
+        "t": "2026-10-11T11:40:30.879106+05:30",
+        "source": "telemetry",
+        "event": "shippingservice went down (health check: gRPC deadline exceeded)",
+        "key": "service_down:shippingservice"
+      },
+      {
+        "id": "E5",
+        "t": "2026-10-11T11:40:34.805453+05:30",
+        "source": "runner",
+        "event": "experiment aborted: error rate 25.0% exceeded the limit 20.0% for 2 consecutive samples",
+        "key": "runner:abort"
+      },
+      {
+        "id": "E6",
+        "t": "2026-10-11T11:40:34.805453+05:30",
+        "source": "runner",
+        "event": "runner rolled back (reconnected online-boutique-shippingservice-1 to online-boutique_default (aliases ['online-boutique-shippingservice-1', 'shippingservice']))",
+        "key": "runner:rollback"
+      },
+      {
+        "id": "E7",
+        "t": "2026-10-11T11:40:38.058192+05:30",
+        "source": "telemetry",
+        "event": "shippingservice is healthy again",
+        "key": "service_up:shippingservice"
+      },
+      {
+        "id": "E8",
+        "t": "2026-10-11T11:40:41.288898+05:30",
+        "source": "telemetry",
+        "event": "Cart page probe is passing again",
+        "key": "page_ok:Cart"
+      },
+      {
+        "id": "E9",
+        "t": "2026-10-11T11:40:43.961681+05:30",
+        "source": "runner",
+        "event": "application healthy again (two clean samples in a row)",
+        "key": "runner:recovered"
+      }
+    ],
+    "refs": {
+      "runner:injected": "E1",
+      "log:online-boutique-frontend-1:error": "E2",
+      "page_fail:Cart": "E3",
+      "service_down:shippingservice": "E4",
+      "runner:abort": "E5",
+      "runner:rollback": "E6",
+      "service_up:shippingservice": "E7",
+      "page_ok:Cart": "E8",
+      "runner:recovered": "E9"
+    },
+    "log_findings": [
+      {
+        "container": "online-boutique-frontend-1",
+        "service": "frontend",
+        "kind": "error",
+        "count": 6,
+        "first_at": "2026-10-11T06:10:30.544060Z",
+        "first_line": "{\"error\":\"failed to get shipping quote: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"22af1538-5cb7-4a53-b792-565c5843dd8a\",\"http.req.method\":\"GET\",\"http.req.path\":\"/cart\",\"message\":\"request error...",
+        "last_line": "{\"error\":\"failed to get shipping quote: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"f99a7b02-1ca2-4e71-a2c0-6e9532449cf8\",\"http.req.method\":\"GET\",\"http.req.path\":\"/cart\",\"message\":\"request error..."
+      }
+    ],
+    "graph": {
+      "service": "shippingservice",
+      "callers": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "direct_callers": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "criticality_score": 51.7,
+      "criticality_reason": "2 service(s) depend on it; on the checkout path",
+      "on_checkout_path": true,
+      "single_point_of_failure": false,
+      "expected_pages": [
+        "Cart",
+        "Checkout"
+      ]
+    },
+    "facts": {
+      "samples": 41,
+      "first_page_failure": {
+        "Cart": "2026-10-11T11:40:30.879106+05:30"
+      },
+      "page_recovered": {
+        "Cart": "2026-10-11T11:40:41.288898+05:30"
+      },
+      "first_service_down": {
+        "shippingservice": "2026-10-11T11:40:30.879106+05:30"
+      },
+      "failed_pages": [
+        "Cart"
+      ],
+      "pages_never_failed": [
+        "Checkout",
+        "Home",
+        "Product"
+      ],
+      "services_down_ever": [
+        "shippingservice"
+      ],
+      "error_types": {
+        "timeout": 3
+      },
+      "peak_error_rate_pct": 25.0,
+      "peak_p95_ms": 3018.4,
+      "restart_delta": 0,
+      "container_for_service": {
+        "frontend": "online-boutique-frontend-1",
+        "productcatalogservice": "online-boutique-productcatalogservice-1",
+        "currencyservice": "online-boutique-currencyservice-1",
+        "cartservice": "online-boutique-cartservice-1",
+        "redis-cart": "online-boutique-redis-cart-1",
+        "shippingservice": "online-boutique-shippingservice-1",
+        "checkoutservice": "online-boutique-checkoutservice-1",
+        "paymentservice": "online-boutique-paymentservice-1",
+        "emailservice": "online-boutique-emailservice-1",
+        "adservice": "online-boutique-adservice-1",
+        "recommendationservice": "online-boutique-recommendationservice-1",
+        "loadgenerator": "online-boutique-loadgenerator-1"
+      }
+    },
+    "notes": []
+  }
+}

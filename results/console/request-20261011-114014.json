@@ -1,0 +1,20 @@
+{
+  "prompt": "do a network partition on shippingservice",
+  "interpreted_by": "llm:openai/gpt-oss-120b",
+  "note": "Requested a network partition attack on shippingservice",
+  "understood": true,
+  "plan": {
+    "experiment_id": "network_partition-shippingservice-114018",
+    "cluster": "online-boutique",
+    "target": "shippingservice",
+    "action": "network_partition",
+    "params": {},
+    "hypothesis": "When shippingservice is reachable by no one, callers treat it as down rather than hanging on connections that never complete.",
+    "expected_observations": "Connection/resolution errors on dependent paths, handled like an outage; the isolated service itself stays up.",
+    "max_duration_s": 30,
+    "recovery_criteria": "shippingservice is reconnected to its network and callers reach it again."
+  },
+  "allowed": true,
+  "reasons": [],
+  "notes": []
+}

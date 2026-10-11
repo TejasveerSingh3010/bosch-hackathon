@@ -1,0 +1,15 @@
+diff --git a/src/frontend/rpc.go b/src/frontend/rpc.go
+--- a/src/frontend/rpc.go
++++ b/src/frontend/rpc.go
+@@ -123,5 +123,10 @@
+ 	resp, err := pb.NewAdServiceClient(fe.adSvcConn).GetAds(ctx, &pb.AdRequest{
+ 		ContextKeys: ctxKeys,
+ 	})
+-	return resp.GetAds(), errors.Wrap(err, "failed to get ads")
++	if err != nil {
++		fe.adSvcConn.ResetConnectBackoff()
++		log.WithError(err).Warn("failed to get ads, fallback to empty")
++		return []*pb.Ad{}, nil
++	}
++	return resp.GetAds(), nil
+ }

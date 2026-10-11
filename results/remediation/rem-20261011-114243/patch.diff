@@ -1,0 +1,12 @@
+diff --git a/src/frontend/rpc.go b/src/frontend/rpc.go
+--- a/src/frontend/rpc.go
++++ b/src/frontend/rpc.go
+@@ -85,6 +85,8 @@
+ }
+ 
+ func (fe *frontendServer) getShippingQuote(ctx context.Context, items []*pb.CartItem, currency string) (*pb.Money, error) {
++	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
++	defer cancel()
+ 	quote, err := pb.NewShippingServiceClient(fe.shippingSvcConn).GetQuote(ctx,
+ 		&pb.GetQuoteRequest{
+ 			Address: nil,

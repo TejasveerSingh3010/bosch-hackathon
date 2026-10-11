@@ -1,0 +1,20 @@
+{
+  "prompt": "pause currencyservice for 30 seconds",
+  "interpreted_by": "llm:openai/gpt-oss-120b",
+  "note": "Pause currencyservice for 30 seconds.",
+  "understood": true,
+  "plan": {
+    "experiment_id": "pause-currencyservice-115903",
+    "cluster": "online-boutique",
+    "target": "currencyservice",
+    "action": "pause",
+    "params": {},
+    "hypothesis": "An unresponsive currencyservice does not tie up its callers: they time out rather than hang until the request budget is exhausted.",
+    "expected_observations": "Latency on dependent paths rises to a bounded deadline, not to the probe timeout; callers without a deadline will hang (a finding).",
+    "max_duration_s": 30,
+    "recovery_criteria": "currencyservice is unpaused and latency returns to baseline."
+  },
+  "allowed": true,
+  "reasons": [],
+  "notes": []
+}

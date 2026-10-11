@@ -1,0 +1,41 @@
+diff --git a/src/frontend/rpc.go b/src/frontend/rpc.go
+--- a/src/frontend/rpc.go
++++ b/src/frontend/rpc.go
+@@ -28,10 +28,15 @@
+ )
+ 
+ func (fe *frontendServer) getCurrencies(ctx context.Context) ([]string, error) {
++	// Apply a short deadline to avoid hanging on currencyservice pauses.
++	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
++	defer cancel()
+ 	currs, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).
+ 		GetSupportedCurrencies(ctx, &pb.Empty{})
+ 	if err != nil {
+-		return nil, err
++		// Log warning and continue with empty currency list.
++		log.WithError(err).Warn("getCurrencies failed, proceeding with empty list")
++		return []string{}, nil
+ 	}
+ 	var out []string
+ 	for _, c := range currs.CurrencyCodes {
+@@ -78,10 +83,19 @@
+ 	if avoidNoopCurrencyConversionRPC && money.GetCurrencyCode() == currency {
+ 		return money, nil
+ 	}
+-	return pb.NewCurrencyServiceClient(fe.currencySvcConn).
++	// Apply a short deadline to avoid hanging on currencyservice pauses.
++	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
++	defer cancel()
++	converted, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).
+ 		Convert(ctx, &pb.CurrencyConversionRequest{
+ 			From:   money,
+ 			ToCode: currency})
++	if err != nil {
++		// Log warning and fallback to the original amount.
++		log.WithError(err).Warn("convertCurrency failed, using original amount")
++		return money, nil
++	}
++	return converted, nil
+ }
+ 
+ func (fe *frontendServer) getShippingQuote(ctx context.Context, items []*pb.CartItem, currency string) (*pb.Money, error) {

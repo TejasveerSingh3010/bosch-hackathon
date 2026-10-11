@@ -1,0 +1,402 @@
+{
+  "id": "pause-currencyservice-115903",
+  "kind": "experiment",
+  "generated_at": "2026-10-11T11:59:38.033727+05:30",
+  "narrator": "llm:openai/gpt-oss-20b",
+  "title": "Failure report: pause on currencyservice (pause-currencyservice-115903)",
+  "verdict": "aborted",
+  "target": "currencyservice",
+  "action": "pause",
+  "timings": {
+    "detection_seconds": null,
+    "impact_seconds": 6.8,
+    "recovery_seconds": 3.1
+  },
+  "phases": {
+    "before": {
+      "samples": 30,
+      "seconds": 58.2,
+      "error_rate_pct_mean": 0.0,
+      "error_rate_pct_max": 0.0,
+      "p95_ms_mean": 156.22,
+      "p95_ms_max": 173.68,
+      "failed_endpoints": [],
+      "error_types": {}
+    },
+    "during": {
+      "samples": 1,
+      "seconds": 0.0,
+      "error_rate_pct_mean": 75.0,
+      "error_rate_pct_max": 75.0,
+      "p95_ms_mean": 3009.1,
+      "p95_ms_max": 3009.1,
+      "failed_endpoints": [
+        "Cart",
+        "Home",
+        "Product"
+      ],
+      "error_types": {
+        "timeout": 3
+      }
+    },
+    "after": {
+      "samples": 3,
+      "seconds": 2.6,
+      "error_rate_pct_mean": 8.33,
+      "error_rate_pct_max": 25.0,
+      "p95_ms_mean": 1115.71,
+      "p95_ms_max": 3011.88,
+      "failed_endpoints": [
+        "Product"
+      ],
+      "error_types": {
+        "timeout": 1
+      }
+    }
+  },
+  "analysis": {
+    "headline": "Pause of currencyservice caused transient timeouts; pages recovered after rollback",
+    "severity": "major",
+    "summary": "The injected pause on the currencyservice container led to health‑check failures and timeout errors in all pages that depend on currency data. The service was unpaused and restored, and dependent pages recovered within a few seconds. The experiment was aborted automatically due to high error rate.",
+    "failure_point": "The pause of the currencyservice container at 2026-10-11T11:59:11.623153+05:30 caused its health checks to fail (E7) and produced timeout errors in the frontend and product pages.",
+    "origin": {
+      "component": "currencyservice",
+      "first_degraded_at": "2026-10-11T11:59:15.243396+05:30",
+      "basis": "observed",
+      "evidence": [
+        "E7"
+      ],
+      "note": ""
+    },
+    "propagation": [
+      {
+        "component": "currencyservice",
+        "kind": "origin",
+        "at": "2026-10-11T11:59:15.243396+05:30",
+        "seconds_after_origin": null,
+        "evidence": [
+          "E7"
+        ],
+        "note": ""
+      },
+      {
+        "component": "currencyservice",
+        "kind": "service",
+        "at": "2026-10-11T11:59:15.243396+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E7"
+        ],
+        "note": ""
+      },
+      {
+        "component": "Home",
+        "kind": "page",
+        "at": "2026-10-11T11:59:15.243396+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E4"
+        ],
+        "note": ""
+      },
+      {
+        "component": "Cart",
+        "kind": "page",
+        "at": "2026-10-11T11:59:15.243396+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E5"
+        ],
+        "note": ""
+      },
+      {
+        "component": "Product",
+        "kind": "page",
+        "at": "2026-10-11T11:59:15.243396+05:30",
+        "seconds_after_origin": 0.0,
+        "evidence": [
+          "E6"
+        ],
+        "note": ""
+      }
+    ],
+    "what_worked": [
+      {
+        "text": "Pages Home, Cart, Product recovered within 3.6 seconds after unpause",
+        "evidence": [
+          "E11",
+          "E12",
+          "E14"
+        ],
+        "basis": "observed"
+      },
+      {
+        "text": "Currencyservice became healthy again after unpause",
+        "evidence": [
+          "E13"
+        ],
+        "basis": "observed"
+      },
+      {
+        "text": "Experiment was aborted due to exceeding error rate threshold",
+        "evidence": [
+          "E9"
+        ],
+        "basis": "observed"
+      }
+    ],
+    "anomalies": []
+  },
+  "evidence": {
+    "kind": "experiment",
+    "subject": "pause-currencyservice-115903",
+    "window_start": "2026-10-11T11:58:11.623153+05:30",
+    "window_end": "2026-10-11T11:59:51.434762+05:30",
+    "experiment": {
+      "id": "pause-currencyservice-115903",
+      "target": "currencyservice",
+      "action": "pause",
+      "params": {},
+      "duration_s": 30,
+      "reason": "An unresponsive currencyservice does not tie up its callers: they time out rather than hang until the request budget is exhausted.",
+      "verdict": "aborted",
+      "abort_reason": "error rate 75.0% exceeded the limit 20.0% for 2 consecutive samples",
+      "container": "online-boutique-currencyservice-1",
+      "service": "currencyservice",
+      "injected_at": "2026-10-11T11:59:11.623153+05:30",
+      "detected_at": null,
+      "rolled_back_at": "2026-10-11T11:59:18.384674+05:30",
+      "recovered_at": "2026-10-11T11:59:21.434762+05:30",
+      "detection_seconds": null,
+      "impact_seconds": 6.8,
+      "recovery_seconds": 3.1,
+      "self_healed": false,
+      "restart_count_delta": 0,
+      "thresholds_used": {
+        "error_rate_pct": 20.0,
+        "p95_ms": 2000.0,
+        "max_collateral_unready": 1.0
+      },
+      "baseline": {
+        "error_rate_pct": 0.0,
+        "sample_p95_ms": {
+          "mean": 159.99,
+          "p95": 212.22,
+          "p99": 255.25,
+          "max": 255.25
+        }
+      },
+      "observations": [
+        "rollback: unpaused online-boutique-currencyservice-1"
+      ],
+      "errors": []
+    },
+    "timeline": [
+      {
+        "id": "E1",
+        "t": "2026-10-11T11:59:11+05:30",
+        "source": "docker",
+        "event": "docker: pause on currencyservice",
+        "key": "docker:pause:currencyservice"
+      },
+      {
+        "id": "E2",
+        "t": "2026-10-11T11:59:11.623153+05:30",
+        "source": "runner",
+        "event": "runner injected pause on online-boutique-currencyservice-1",
+        "key": "runner:injected"
+      },
+      {
+        "id": "E3",
+        "t": "2026-10-11T06:29:14.815073Z",
+        "source": "logs",
+        "event": "online-boutique-frontend-1 logged error x13: {\"error\":\"could not retrieve currencies: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"732e4716-5ee7-46f2-a621-6418236a6010\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/0PUK6V6EV0\",\"message\"...",
+        "key": "log:online-boutique-frontend-1:error"
+      },
+      {
+        "id": "E4",
+        "t": "2026-10-11T11:59:15.243396+05:30",
+        "source": "telemetry",
+        "event": "Home page probe started failing (timeout, HTTP 0, 3009 ms)",
+        "key": "page_fail:Home"
+      },
+      {
+        "id": "E5",
+        "t": "2026-10-11T11:59:15.243396+05:30",
+        "source": "telemetry",
+        "event": "Cart page probe started failing (timeout, HTTP 0, 3009 ms)",
+        "key": "page_fail:Cart"
+      },
+      {
+        "id": "E6",
+        "t": "2026-10-11T11:59:15.243396+05:30",
+        "source": "telemetry",
+        "event": "Product page probe started failing (timeout, HTTP 0, 3007 ms)",
+        "key": "page_fail:Product"
+      },
+      {
+        "id": "E7",
+        "t": "2026-10-11T11:59:15.243396+05:30",
+        "source": "telemetry",
+        "event": "currencyservice went down (container paused; health check: gRPC deadline exceeded)",
+        "key": "service_down:currencyservice"
+      },
+      {
+        "id": "E8",
+        "t": "2026-10-11T11:59:18+05:30",
+        "source": "docker",
+        "event": "docker: unpause on currencyservice",
+        "key": "docker:unpause:currencyservice"
+      },
+      {
+        "id": "E9",
+        "t": "2026-10-11T11:59:18.384674+05:30",
+        "source": "runner",
+        "event": "experiment aborted: error rate 75.0% exceeded the limit 20.0% for 2 consecutive samples",
+        "key": "runner:abort"
+      },
+      {
+        "id": "E10",
+        "t": "2026-10-11T11:59:18.384674+05:30",
+        "source": "runner",
+        "event": "runner rolled back (unpaused online-boutique-currencyservice-1)",
+        "key": "runner:rollback"
+      },
+      {
+        "id": "E11",
+        "t": "2026-10-11T11:59:18.839021+05:30",
+        "source": "telemetry",
+        "event": "Home page probe is passing again",
+        "key": "page_ok:Home"
+      },
+      {
+        "id": "E12",
+        "t": "2026-10-11T11:59:18.839021+05:30",
+        "source": "telemetry",
+        "event": "Cart page probe is passing again",
+        "key": "page_ok:Cart"
+      },
+      {
+        "id": "E13",
+        "t": "2026-10-11T11:59:18.839021+05:30",
+        "source": "telemetry",
+        "event": "currencyservice is healthy again",
+        "key": "service_up:currencyservice"
+      },
+      {
+        "id": "E14",
+        "t": "2026-10-11T11:59:19.418230+05:30",
+        "source": "telemetry",
+        "event": "Product page probe is passing again",
+        "key": "page_ok:Product"
+      },
+      {
+        "id": "E15",
+        "t": "2026-10-11T11:59:21.434762+05:30",
+        "source": "runner",
+        "event": "application healthy again (two clean samples in a row)",
+        "key": "runner:recovered"
+      }
+    ],
+    "refs": {
+      "docker:pause:currencyservice": "E1",
+      "runner:injected": "E2",
+      "log:online-boutique-frontend-1:error": "E3",
+      "page_fail:Home": "E4",
+      "page_fail:Cart": "E5",
+      "page_fail:Product": "E6",
+      "service_down:currencyservice": "E7",
+      "docker:unpause:currencyservice": "E8",
+      "runner:abort": "E9",
+      "runner:rollback": "E10",
+      "page_ok:Home": "E11",
+      "page_ok:Cart": "E12",
+      "service_up:currencyservice": "E13",
+      "page_ok:Product": "E14",
+      "runner:recovered": "E15"
+    },
+    "log_findings": [
+      {
+        "container": "online-boutique-frontend-1",
+        "service": "frontend",
+        "kind": "error",
+        "count": 13,
+        "first_at": "2026-10-11T06:29:14.815073Z",
+        "first_line": "{\"error\":\"could not retrieve currencies: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"732e4716-5ee7-46f2-a621-6418236a6010\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/0PUK6V6EV0\",\"message\"...",
+        "last_line": "{\"error\":\"failed to get ads: rpc error: code = Canceled desc = context canceled\",\"http.req.id\":\"60291b9d-8bf7-45f8-97af-d6cd26109564\",\"http.req.method\":\"GET\",\"http.req.path\":\"/product/0PUK6V6EV0\",\"message\":\"failed to ..."
+      }
+    ],
+    "graph": {
+      "service": "currencyservice",
+      "callers": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "direct_callers": [
+        "checkoutservice",
+        "frontend"
+      ],
+      "dependencies": [],
+      "criticality_score": 51.7,
+      "criticality_reason": "2 service(s) depend on it; on the checkout path",
+      "on_checkout_path": true,
+      "single_point_of_failure": false,
+      "expected_pages": [
+        "Home",
+        "Product",
+        "Cart",
+        "Checkout"
+      ]
+    },
+    "facts": {
+      "samples": 39,
+      "first_page_failure": {
+        "Home": "2026-10-11T11:59:15.243396+05:30",
+        "Cart": "2026-10-11T11:59:15.243396+05:30",
+        "Product": "2026-10-11T11:59:15.243396+05:30"
+      },
+      "page_recovered": {
+        "Home": "2026-10-11T11:59:18.839021+05:30",
+        "Cart": "2026-10-11T11:59:18.839021+05:30",
+        "Product": "2026-10-11T11:59:19.418230+05:30"
+      },
+      "first_service_down": {
+        "currencyservice": "2026-10-11T11:59:15.243396+05:30"
+      },
+      "failed_pages": [
+        "Cart",
+        "Home",
+        "Product"
+      ],
+      "pages_never_failed": [
+        "Checkout"
+      ],
+      "services_down_ever": [
+        "currencyservice"
+      ],
+      "error_types": {
+        "timeout": 4
+      },
+      "peak_error_rate_pct": 75.0,
+      "peak_p95_ms": 3011.9,
+      "restart_delta": 0,
+      "container_for_service": {
+        "frontend": "online-boutique-frontend-1",
+        "productcatalogservice": "online-boutique-productcatalogservice-1",
+        "currencyservice": "online-boutique-currencyservice-1",
+        "cartservice": "online-boutique-cartservice-1",
+        "redis-cart": "online-boutique-redis-cart-1",
+        "shippingservice": "online-boutique-shippingservice-1",
+        "checkoutservice": "online-boutique-checkoutservice-1",
+        "paymentservice": "online-boutique-paymentservice-1",
+        "emailservice": "online-boutique-emailservice-1",
+        "adservice": "online-boutique-adservice-1",
+        "recommendationservice": "online-boutique-recommendationservice-1",
+        "loadgenerator": "online-boutique-loadgenerator-1"
+      }
+    },
+    "notes": [
+      "online-boutique-currencyservice-1: no error lines in the window (2110 lines read)"
+    ]
+  }
+}
