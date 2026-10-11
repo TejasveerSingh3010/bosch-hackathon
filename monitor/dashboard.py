@@ -351,56 +351,136 @@ if open_graphs:
             else:
                 st.info("No latency samples yet for this service.")
 
+# ---------------- Agent 1: deadliest attacks ----------------
+# The planner only ranks here; nothing is injected. The dashboard starts `python -m planner rank`
+# in the background (on request, or when the ranking is older than RANK_EVERY_S) and reads the file
+# it writes, so it still cannot start an experiment.
+RANK_FILE = core.OUT_DIR / "attack_ranking.json"
+RANK_LOG = core.OUT_DIR / "attack_ranking.log"
+RANK_EVERY_S = int(os.getenv("BOUTIQUE_RANK_EVERY_S", "600"))  # 0 = only on request
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@st.cache_resource
+def _ranker():
+    """One background ranking at a time, shared by every browser tab."""
+    return {"proc": None, "started": 0.0}
+
+
+def _start_ranking():
+    """Start `planner rank` unless one is already running. Also the button's on_click callback, which
+    Streamlit runs before the script, so a click is not lost to the 2 s autorefresh rerun."""
+    import subprocess
+    import sys
+
+    state = _ranker()
+    if state["proc"] is not None and state["proc"].poll() is None:
+        return
+    with RANK_LOG.open("w", encoding="utf-8") as log:
+        state["proc"] = subprocess.Popen(
+            [sys.executable, "-m", "planner", "--results-dir", str(core.OUT_DIR.resolve()), "rank"],
+            cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    state["started"] = time.time()
+
+
+def _attack_ranking_panel():
+    st.markdown("### ☠️ Deadliest attacks right now")
+    try:
+        doc = json.loads(RANK_FILE.read_text(encoding="utf-8"))
+        age = max(0, int(time.time() - datetime.fromisoformat(doc["generated_at"]).timestamp()))
+    except (OSError, ValueError, KeyError):
+        doc, age = None, None
+    state = _ranker()
+    running = state["proc"] is not None and state["proc"].poll() is None
+    due = (RANK_EVERY_S > 0 and (age is None or age > RANK_EVERY_S)
+           and time.time() - state["started"] > RANK_EVERY_S)
+    st.button("↻ Re-rank now", disabled=running, width="stretch", on_click=_start_ranking)
+    if due and not running:
+        try:
+            _start_ranking()
+        except OSError as exc:
+            st.error(f"Could not start the planner: {exc}")
+    running = state["proc"] is not None and state["proc"].poll() is None
+    if running:
+        st.info("Agent 1 is ranking attacks against the current health…")
+    elif state["proc"] is not None and state["proc"].returncode:
+        st.warning(f"The last ranking failed; see {RANK_LOG}.")
+    if doc is None:
+        st.caption("No ranking yet. It is also available from the CLI: python -m planner rank")
+        return
+    st.caption(f"By {doc['narrator']} · {age}s ago · ranked from the cluster's health at that moment. "
+               "Ranking only: every injection still goes through the policy check and human approval.")
+    if doc.get("llm_error"):
+        st.caption("The model was unavailable, so this is the deterministic ranking.")
+    if not doc.get("safe_to_inject"):
+        st.warning("Cluster degraded or telemetry stale: not safe to inject now.")
+    for item in doc.get("ranked", []):
+        params = ", ".join(f"{k}={v}" for k, v in (item.get("params") or {}).items())
+        st.markdown(f"**{item['rank']}. {item['title']}** → `{item['target']}`"
+                    + (f" · {params}" if params else ""))
+        st.progress(min(1.0, item["deadliness"] / 100), text=f"deadliness {item['deadliness']}/100")
+        st.caption(item["rationale"])
+
+
 # ---------------- Actions ----------------
 st.divider()
-st.subheader("Chaos / monitoring tests")
-st.caption(f"Run only against your own local/test environment. The restart briefly affects the frontend. "
-           f"Traffic burst: {core.BURST_MAX_SECONDS}s max, {core.BURST_MAX_WORKERS} workers max, "
-           f"{core.BURST_MAX_REQUESTS} requests max.")
+chaos_col, rank_col = st.columns([2.2, 1], gap="large")
+with chaos_col:
+    st.subheader("Chaos / monitoring tests")
+    st.caption(f"Run only against your own local/test environment. The restart briefly affects the frontend. "
+               f"Traffic burst: {core.BURST_MAX_SECONDS}s max, {core.BURST_MAX_WORKERS} workers max, "
+               f"{core.BURST_MAX_REQUESTS} requests max.")
 
-a1, a2, a3 = st.columns(3)
-with a1:
-    st.markdown("### 💥 Restart frontend")
-    if backend == "docker":
-        st.write("Kills and restarts the single `frontend` container (`docker restart --time 0`).")
-    else:
-        st.write("Deletes one controller-managed frontend pod. Kubernetes should recreate it.")
-    confirm_restart = st.checkbox("I confirm this is my test environment", key="confirm_restart")
-    if st.button("Run frontend-failure test", type="primary", disabled=not confirm_restart, width="stretch"):
-        try:
-            ok, msg = core.restart_frontend(backend, namespace, project)
-            st.session_state.action_message = ("success" if ok else "error", msg)
-        except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
-            st.session_state.action_message = ("error", str(exc)[:400])
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        st.markdown("### 💥 Restart frontend")
+        if backend == "docker":
+            st.write("Kills and restarts the single `frontend` container (`docker restart --time 0`).")
+        else:
+            st.write("Deletes one controller-managed frontend pod. Kubernetes should recreate it.")
+        confirm_restart = st.checkbox("I confirm this is my test environment", key="confirm_restart")
+        if st.button("Run frontend-failure test", type="primary", disabled=not confirm_restart,
+                     width="stretch"):
+            try:
+                ok, msg = core.restart_frontend(backend, namespace, project)
+                st.session_state.action_message = ("success" if ok else "error", msg)
+            except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
+                st.session_state.action_message = ("error", str(exc)[:400])
 
-with a2:
-    st.markdown("### 📈 Bounded traffic burst")
-    burst_seconds = st.number_input(
-        "Duration (seconds)", min_value=1, max_value=core.BURST_MAX_SECONDS,
-        value=min(30, core.BURST_MAX_SECONDS), step=5,
-    )
-    burst_workers = st.number_input("Concurrent workers", min_value=1, max_value=core.BURST_MAX_WORKERS, value=5)
-    st.write("Keeps sending GETs across the three monitored pages until the duration ends.")
-    if st.button("Run traffic burst", width="stretch"):
-        try:
-            with st.spinner(f"Sending traffic for {int(burst_seconds)}s…"):
-                burst = core.bounded_traffic_burst(
-                    base_url, workers=int(burst_workers), duration_s=int(burst_seconds),
-                )
-            st.session_state.action_message = (
-                "info",
-                f"Traffic burst ran {burst['elapsed_s']}s: {burst['total']} requests, "
-                f"{burst['errors']} errors ({burst['error_rate_pct']}%), "
-                f"mean {burst['mean_latency_ms']} ms, p95 {burst['p95_latency_ms']} ms.")
-        except Exception as exc:  # noqa: BLE001
-            st.session_state.action_message = ("error", str(exc)[:400])
+    with a2:
+        st.markdown("### 📈 Bounded traffic burst")
+        burst_seconds = st.number_input(
+            "Duration (seconds)", min_value=1, max_value=core.BURST_MAX_SECONDS,
+            value=min(30, core.BURST_MAX_SECONDS), step=5,
+        )
+        burst_workers = st.number_input("Concurrent workers", min_value=1,
+                                        max_value=core.BURST_MAX_WORKERS, value=5)
+        st.write("Keeps sending GETs across the three monitored pages until the duration ends.")
+        if st.button("Run traffic burst", width="stretch"):
+            try:
+                with st.spinner(f"Sending traffic for {int(burst_seconds)}s…"):
+                    burst = core.bounded_traffic_burst(
+                        base_url, workers=int(burst_workers), duration_s=int(burst_seconds),
+                    )
+                st.session_state.action_message = (
+                    "info",
+                    f"Traffic burst ran {burst['elapsed_s']}s: {burst['total']} requests, "
+                    f"{burst['errors']} errors ({burst['error_rate_pct']}%), "
+                    f"mean {burst['mean_latency_ms']} ms, p95 {burst['p95_latency_ms']} ms.")
+            except Exception as exc:  # noqa: BLE001
+                st.session_state.action_message = ("error", str(exc)[:400])
 
-with a3:
-    st.markdown("### 🚦 Test alerting pipeline")
-    st.write("Simulates failed probes for 15 seconds to verify red status, telemetry and breach flag. Does not affect the app.")
-    if st.button("Simulate probe failure", width="stretch"):
-        live.simulate_until = time.time() + 15
-        st.session_state.action_message = ("warning", "Probe-failure simulation enabled for 15 seconds. Confirm the dashboard turns red and SLA_BREACH.flag is written.")
+    with a3:
+        st.markdown("### 🚦 Test alerting pipeline")
+        st.write("Simulates failed probes for 15 seconds to verify red status, telemetry and breach flag. Does not affect the app.")
+        if st.button("Simulate probe failure", width="stretch"):
+            live.simulate_until = time.time() + 15
+            st.session_state.action_message = ("warning", "Probe-failure simulation enabled for 15 seconds. Confirm the dashboard turns red and SLA_BREACH.flag is written.")
+
+with rank_col:
+    _attack_ranking_panel()
 
 if st.session_state.action_message:
     level, message = st.session_state.action_message
