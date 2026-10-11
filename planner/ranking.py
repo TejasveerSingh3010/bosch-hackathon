@@ -199,12 +199,23 @@ def rank_deadliest(tools: ToolInterface, limit: int = TOP_N,
         "safe_to_inject": bool(health.get("available") and health.get("fresh")
                                and not health.get("degraded")),
         "health": cluster,
-        "ranked": [{"rank": i, "title": get_attack(r.action).title, **r.model_dump(exclude={"params"}),
-                    "params": r.params.given()} for i, r in enumerate(ranked, 1)],
+        "ranked": [_entry(i, r) for i, r in enumerate(ranked, 1)],
     }
     if error:
         doc["llm_error"] = error
     return doc
+
+
+def _entry(rank: int, item: RankedAttack) -> dict[str, Any]:
+    """One board entry: the ranking plus the catalogue text a human reads before approving."""
+    attack, fill = get_attack(item.action), {"target": item.target}
+    return {
+        "rank": rank, "title": attack.title, **item.model_dump(exclude={"params"}),
+        "params": item.params.given(), "description": attack.description,
+        "hypothesis": attack.hypothesis.format(**fill),
+        "expected_observations": attack.expected_observations.format(**fill),
+        "recovery_criteria": attack.recovery_criteria.format(**fill),
+    }
 
 
 def write_ranking(doc: dict[str, Any], results_dir: Path) -> Path:

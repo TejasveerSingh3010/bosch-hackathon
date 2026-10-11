@@ -437,3 +437,9 @@ def test_a_console_run_needs_the_operators_confirmation(config, docker, results_
     other = plan.model_copy(update={"experiment_id": "something-else"})
     assert execute(tools, other)["status"] == "not_approved"  # confirmation covers one plan only
 
+
+def test_board_entries_carry_the_catalogue_text(config, docker, results_dir, write_telemetry):
+    write_telemetry(count=5)
+    doc = rank_deadliest(ToolInterface(config, docker, auditor(results_dir), approver=DenyAll()))
+    entry = doc["ranked"][0]
+    assert entry["target"] in entry["hypothesis"] and entry["recovery_criteria"] and entry["description"]
