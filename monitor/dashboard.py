@@ -364,7 +364,7 @@ if open_graphs:
 # it writes, so it still cannot start an experiment.
 RANK_FILE = core.OUT_DIR / "attack_ranking.json"
 RANK_LOG = core.OUT_DIR / "attack_ranking.log"
-RANK_EVERY_S = int(os.getenv("BOUTIQUE_RANK_EVERY_S", "600"))  # 0 = only on request
+RANK_EVERY_S = int(os.getenv("BOUTIQUE_RANK_EVERY_S", "1800"))  # 0 = only on request
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -392,8 +392,55 @@ def _start_ranking():
     state["started"] = time.time()
 
 
+def _deadliness_colour(value):
+    return "#dc2626" if value >= 75 else "#ea580c" if value >= 50 else "#ca8a04"
+
+
+def _open_card(index):
+    st.session_state.open_card = index
+
+
+def _close_card():
+    st.session_state.open_card = None
+
+
+@st.dialog("ATTACK DETAILS", width="large", on_dismiss=_close_card)
+def _attack_dialog(item):
+    params = ", ".join(f"{k} = {v}" for k, v in (item.get("params") or {}).items()) or "none"
+    st.markdown(f"#### {item['rank']}. {item['title']} on `{item['target']}`")
+    st.progress(min(1.0, item["deadliness"] / 100), text=f"Deadliness {item['deadliness']} / 100")
+    rows = [
+        ("Attack", f"{item['title']} ({item['action']})"),
+        ("Target", item["target"]),
+        ("Parameters", params),
+        ("What it does", item.get("description", "")),
+        ("Why it ranks here", item["rationale"]),
+        ("Hypothesis", item.get("hypothesis", "")),
+        ("A resilient system shows", item.get("expected_observations", "")),
+        ("Recovered when", item.get("recovery_criteria", "")),
+    ]
+    st.table(pd.DataFrame([r for r in rows if r[1]], columns=["Field", "Detail"]).set_index("Field"))
+    c1, c2 = st.columns(2)
+    if c1.button("Prepare in the attack console", type="primary", width="stretch"):
+        _start_interpret(f"{item['action']} on {item['target']} with {params} for 30 seconds")
+        _close_card()
+        st.rerun()
+    if c2.button("Close", width="stretch"):
+        _close_card()
+        st.rerun()
+
+
+def _card_css(ranked):
+    borders = "".join(f".st-key-attack_card_{i} button {{ border-color: {_deadliness_colour(item['deadliness'])}; }}"
+                      for i, item in enumerate(ranked))
+    return f"""<style>
+.st-key-attack_cards button {{ aspect-ratio: 1 / 1; height: auto; border-width: 2px; border-radius: .6rem; }}
+.st-key-attack_cards button p {{ white-space: pre-line; font-size: 1.05rem; line-height: 1.6; }}
+{borders}
+</style>"""
+
+
 def _attack_ranking_panel():
-    st.markdown("### ☠️ Deadliest attacks right now")
     try:
         doc = json.loads(RANK_FILE.read_text(encoding="utf-8"))
         age = max(0, int(time.time() - datetime.fromisoformat(doc["generated_at"]).timestamp()))
@@ -403,150 +450,268 @@ def _attack_ranking_panel():
     running = state["proc"] is not None and state["proc"].poll() is None
     due = (RANK_EVERY_S > 0 and (age is None or age > RANK_EVERY_S)
            and time.time() - state["started"] > RANK_EVERY_S)
-    st.button("↻ Re-rank now", disabled=running, width="stretch", on_click=_start_ranking)
     if due and not running:
         try:
             _start_ranking()
         except OSError as exc:
             st.error(f"Could not start the planner: {exc}")
     running = state["proc"] is not None and state["proc"].poll() is None
+
+    _, btn = st.columns([5, 1])
+    btn.button("Re-rank now", disabled=running, width="stretch", on_click=_start_ranking)
     if running:
         st.info("Agent 1 is ranking attacks against the current health…")
     elif state["proc"] is not None and state["proc"].returncode:
         st.warning(f"The last ranking failed; see {RANK_LOG}.")
     if doc is None:
-        st.caption("No ranking yet. It is also available from the CLI: python -m planner rank")
+        st.caption("No ranking yet.")
         return
-    st.caption(f"By {doc['narrator']} · {age}s ago · ranked from the cluster's health at that moment. "
-               "Ranking only: every injection still goes through the policy check and human approval.")
-    if doc.get("llm_error"):
-        st.caption("The model was unavailable, so this is the deterministic ranking.")
     if not doc.get("safe_to_inject"):
         st.warning("Cluster degraded or telemetry stale: not safe to inject now.")
-    for item in doc.get("ranked", []):
-        params = ", ".join(f"{k}={v}" for k, v in (item.get("params") or {}).items())
-        st.markdown(f"**{item['rank']}. {item['title']}** → `{item['target']}`"
-                    + (f" · {params}" if params else ""))
-        st.progress(min(1.0, item["deadliness"] / 100), text=f"deadliness {item['deadliness']}/100")
-        st.caption(item["rationale"])
+    ranked = sorted(doc.get("ranked", []), key=lambda item: -item["deadliness"])
+    if not ranked:
+        return
+    st.markdown(_card_css(ranked), unsafe_allow_html=True)
+    with st.container(key="attack_cards"):
+        for i, (col, item) in enumerate(zip(st.columns(len(ranked)), ranked, strict=True)):
+            label = f"#{item['rank']}\n**{item['title']}**\n{item['target']}\n{item['deadliness']} / 100"
+            col.button(label, key=f"attack_card_{i}", width="stretch", on_click=_open_card, args=(i,),
+                       help="Show the details")
+    index = st.session_state.get("open_card")
+    if index is not None and index < len(ranked):
+        _attack_dialog(ranked[index])
 
 
-# ---------------- Actions ----------------
-st.divider()
-chaos_col, rank_col = st.columns([2.2, 1], gap="large")
-with chaos_col:
-    st.subheader("Chaos / monitoring tests")
-    st.caption(f"Run only against your own local/test environment. The restart briefly affects the frontend. "
-               f"Traffic burst: {core.BURST_MAX_SECONDS}s max, {core.BURST_MAX_WORKERS} workers max, "
-               f"{core.BURST_MAX_REQUESTS} requests max.")
+# ---------------- Attack console ----------------
+# Agent 1 reads a plain-words request into one plan (`python -m planner interpret`), shows it with
+# the policy decision, and runs it only when the operator presses Run (`execute --confirm`). The
+# runner re-validates it, journals it and always rolls back; the sidebar kill switch stops it.
+CONSOLE_DIR = core.OUT_DIR / "console"
 
-    a1, a2, a3 = st.columns(3)
-    with a1:
-        st.markdown("### 💥 Restart frontend")
-        if backend == "docker":
-            st.write("Kills and restarts the single `frontend` container (`docker restart --time 0`).")
-        else:
-            st.write("Deletes one controller-managed frontend pod. Kubernetes should recreate it.")
-        confirm_restart = st.checkbox("I confirm this is my test environment", key="confirm_restart")
-        if st.button("Run frontend-failure test", type="primary", disabled=not confirm_restart,
-                     width="stretch"):
-            try:
-                ok, msg = core.restart_frontend(backend, namespace, project)
-                st.session_state.action_message = ("success" if ok else "error", msg)
-            except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
-                st.session_state.action_message = ("error", str(exc)[:400])
 
-    with a2:
-        st.markdown("### 📈 Bounded traffic burst")
-        burst_seconds = st.number_input(
-            "Duration (seconds)", min_value=1, max_value=core.BURST_MAX_SECONDS,
-            value=min(30, core.BURST_MAX_SECONDS), step=5,
+@st.cache_resource
+def _console():
+    """One console job at a time (shared by every browser tab, so two tabs cannot both inject)."""
+    return {"proc": None, "kind": None, "request": None, "log": None}
+
+
+def _console_busy(state):
+    return state["proc"] is not None and state["proc"].poll() is None
+
+
+def _start_console(kind, args, request):
+    import subprocess
+    import sys
+
+    state = _console()
+    if _console_busy(state):
+        return
+    CONSOLE_DIR.mkdir(parents=True, exist_ok=True)
+    state["log"] = request.with_suffix(f".{kind}.log")
+    with state["log"].open("w", encoding="utf-8") as log:
+        state["proc"] = subprocess.Popen(
+            [sys.executable, "-m", "planner", "--results-dir", str(core.OUT_DIR.resolve()), *args],
+            cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        burst_workers = st.number_input("Concurrent workers", min_value=1,
-                                        max_value=core.BURST_MAX_WORKERS, value=5)
-        st.write("Keeps sending GETs across the three monitored pages until the duration ends.")
-        if st.button("Run traffic burst", width="stretch"):
-            try:
-                with st.spinner(f"Sending traffic for {int(burst_seconds)}s…"):
-                    burst = core.bounded_traffic_burst(
-                        base_url, workers=int(burst_workers), duration_s=int(burst_seconds),
-                    )
-                st.session_state.action_message = (
-                    "info",
-                    f"Traffic burst ran {burst['elapsed_s']}s: {burst['total']} requests, "
-                    f"{burst['errors']} errors ({burst['error_rate_pct']}%), "
-                    f"mean {burst['mean_latency_ms']} ms, p95 {burst['p95_latency_ms']} ms.")
-            except Exception as exc:  # noqa: BLE001
-                st.session_state.action_message = ("error", str(exc)[:400])
+    state["kind"], state["request"] = kind, request
 
-    with a3:
-        st.markdown("### 🚦 Test alerting pipeline")
-        st.write("Simulates failed probes for 15 seconds to verify red status, telemetry and breach flag. Does not affect the app.")
-        if st.button("Simulate probe failure", width="stretch"):
-            live.simulate_until = time.time() + 15
-            st.session_state.action_message = ("warning", "Probe-failure simulation enabled for 15 seconds. Confirm the dashboard turns red and SLA_BREACH.flag is written.")
 
-with rank_col:
-    _attack_ranking_panel()
+def _start_interpret(text):
+    request = CONSOLE_DIR / f"request-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    _start_console("interpret", ["interpret", text, "--out", str(request)], request)
+
+
+def _submit_request():
+    text = (st.session_state.get("attack_request") or "").strip()
+    if text:
+        _start_interpret(text)
+
+
+def _run_request():
+    state = _console()
+    if state["request"] is not None:
+        _start_console("execute", ["execute", str(state["request"]), "--confirm"], state["request"])
+
+
+def _discard_request():
+    state = _console()
+    if not _console_busy(state):
+        state.update(proc=None, kind=None, request=None, log=None)
+
+
+def _log_tail(state, lines=6):
+    try:
+        return "\n".join(state["log"].read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    except (OSError, AttributeError):
+        return ""
+
+
+def _attack_console():
+    st.subheader("ATTACK CONSOLE")
+    state = _console()
+    busy = _console_busy(state)
+    with st.form("attack_prompt", border=False):
+        f1, f2 = st.columns([5, 1], vertical_alignment="bottom")
+        f1.text_input("Attack request", key="attack_request",
+                      placeholder="e.g. add 400 ms latency and 5% loss to cartservice for 20 seconds")
+        f2.form_submit_button("Plan it", width="stretch", disabled=busy, on_click=_submit_request)
+
+    if busy:
+        if state["kind"] == "interpret":
+            st.info("Agent 1 is reading the request and checking it against the policy…")
+        else:
+            active = _active_experiment()
+            st.warning("Running the attack" + (f": {active[0]} on {active[1]}, {active[3]}s in" if active else "…")
+                       + ". Use the kill switch in the sidebar to stop it.")
+        return
+    if state["request"] is None:
+        return
+    try:
+        request = json.loads(state["request"].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        st.error("The planner did not produce a plan.")
+        if tail := _log_tail(state):
+            st.code(tail, language="text")
+        st.button("Clear", on_click=_discard_request)
+        return
+
+    plan = request.get("plan")
+    if state["kind"] == "execute" and plan:
+        _console_result(state, plan)
+        return
+    st.markdown(f"**Request:** {request['prompt']}  \n**Read by:** {request['interpreted_by']}"
+                + (f" · {request['note']}" if request.get("note") else ""))
+    if not plan:
+        st.error("Could not plan this: " + "; ".join(request.get("reasons") or ["unknown reason"]))
+        st.button("Clear", on_click=_discard_request)
+        return
+    params = ", ".join(f"{k} = {v}" for k, v in (plan.get("params") or {}).items()) or "none"
+    st.table(pd.DataFrame([
+        ("Attack", plan["action"]), ("Target", plan["target"]), ("Parameters", params),
+        ("Duration", f"{plan['max_duration_s']} s"), ("Experiment id", plan["experiment_id"]),
+        ("Hypothesis", plan["hypothesis"]), ("A resilient system shows", plan["expected_observations"]),
+        ("Recovered when", plan["recovery_criteria"]),
+    ], columns=["Field", "Plan"]).set_index("Field"))
+    if request["allowed"]:
+        st.success("Policy check passed. Running it injects this fault into the live system; the runner "
+                   "rolls it back afterwards.")
+    else:
+        st.error("Rejected by the policy check: " + "; ".join(request.get("reasons") or []))
+    b1, b2, _ = st.columns([1, 1, 3])
+    b1.button("Run this attack", type="primary", width="stretch", disabled=not request["allowed"],
+              on_click=_run_request)
+    b2.button("Discard", width="stretch", on_click=_discard_request)
+
+
+def _console_result(state, plan):
+    """The outcome of a console run, from the orchestrator's record results/<id>.json."""
+    try:
+        result = json.loads((core.OUT_DIR / f"{plan['experiment_id']}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        st.error(f"{plan['action']} on {plan['target']} did not run.")
+        if tail := _log_tail(state):
+            st.code(tail, language="text")
+        st.button("Clear", on_click=_discard_request)
+        return
+
+    def seconds(key):
+        return "—" if result.get(key) is None else f"{result[key]:g} s"
+
+    verdict = result.get("verdict", "unknown")
+    {"completed": st.success, "aborted": st.warning}.get(verdict, st.error)(
+        f"{plan['action']} on {plan['target']} finished: **{verdict}**"
+        + (f" ({result['abort_reason']})" if result.get("abort_reason") else ""))
+    st.table(pd.DataFrame([
+        ("Experiment id", plan["experiment_id"]), ("Verdict", verdict),
+        ("Detection", seconds("detection_seconds")), ("Impact", seconds("impact_seconds")),
+        ("Recovery", seconds("recovery_seconds")),
+    ], columns=["Field", "Result"]).set_index("Field"))
+    st.button("Clear", on_click=_discard_request)
+
+
+# ---------------- Chaos tests: the deadliest attacks ----------------
+st.divider()
+st.subheader("CHAOS TESTS")
+_attack_ranking_panel()
+
+st.divider()
+_attack_console()
 
 # ---------------- Charts and tables ----------------
 st.divider()
-left, right = st.columns([1.2, 1])
-with left:
-    st.subheader("Latency trend")
-    chart_rows = [
-        {"Time": item["timestamp"], "Endpoint": endpoint, "Latency (ms)": val["latency"]}
-        for item in history for endpoint, val in item["metrics"].items()
-    ]
-    if chart_rows:
-        st.line_chart(pd.DataFrame(chart_rows).pivot_table(index="Time", columns="Endpoint", values="Latency (ms)", aggfunc="mean"))
-    else:
-        st.info("Waiting for samples.")
-with right:
-    st.subheader("Endpoint status")
-    table_df = pd.DataFrame([
-        {
-            "Endpoint": r["endpoint"],
-            "HTTP status": r["status"],
-            "Latency (ms)": r["latency_ms"],
-            "Health": "Healthy" if r["success"] and r["latency_ms"] <= latency_sla else "Degraded",
-            "Details": r["error"] or "—",
-        }
-        for r in probe_rows
-    ])
-    st.dataframe(
-        table_df.style.map(
-            lambda v: "color: #15803d; font-weight: bold" if v == "Healthy" or v == 200 else (
-                "color: #b91c1c; font-weight: bold" if v == "Degraded" or (isinstance(v, int) and v >= 400) else ""
-            ),
-            subset=["Health", "HTTP status"],
-        ),
-        width="stretch",
-        hide_index=True,
+st.subheader("LATENCY TREND")
+_lat = pd.DataFrame([
+    {"Time": item["timestamp"], "Endpoint": endpoint, "Latency (ms)": val["latency"],
+     "OK": bool(val["success"])}
+    for item in history for endpoint, val in item["metrics"].items()
+])
+if _lat.empty:
+    st.info("Waiting for samples.")
+else:
+    _lat["Time"] = pd.to_datetime(_lat["Time"], utc=True).dt.tz_convert(datetime.now().astimezone().tzinfo).dt.tz_localize(None)
+    t1, t2 = st.columns([1.5, 1], gap="large")
+    _lines = alt.Chart(_lat).mark_line(point=False).encode(
+        x=alt.X("Time:T", title=None, axis=alt.Axis(format="%H:%M:%S")),
+        y=alt.Y("Latency (ms):Q", title="Latency (ms)"),
+        color=alt.Color("Endpoint:N", legend=alt.Legend(orient="bottom", title=None)),
+        tooltip=["Endpoint", alt.Tooltip("Time:T", format="%H:%M:%S"), "Latency (ms)", "OK"],
     )
+    _sla = alt.Chart(pd.DataFrame({"SLA": [latency_sla]})).mark_rule(
+        color="#dc2626", strokeDash=[6, 4]).encode(y="SLA:Q")
+    t1.altair_chart((_lines + _sla).properties(height=320), width="stretch")
+    _now = {r["endpoint"]: r for r in probe_rows}
+    _summary = []
+    for endpoint, group in _lat.groupby("Endpoint", sort=True):
+        row = _now.get(endpoint, {})
+        lat_ms = group["Latency (ms)"]
+        _summary.append({
+            "Endpoint": endpoint,
+            "HTTP": row.get("status", "—"),
+            "Health": ("Healthy" if row.get("success") and row.get("latency_ms", 0) <= latency_sla
+                       else "Degraded") if row else "—",
+            "Now (ms)": f"{row['latency_ms']:.0f}" if row else "—",
+            "Mean (ms)": f"{lat_ms.mean():.0f}",
+            "p95 (ms)": f"{lat_ms.quantile(0.95):.0f}",
+            "Max (ms)": f"{lat_ms.max():.0f}",
+            "Failed": f"{int((~group['OK']).sum())} / {len(group)}",
+        })
+    t2.markdown("**PER ENDPOINT**")
+    t2.table(pd.DataFrame(_summary).set_index("Endpoint"))
+    _errors = [f"{r['endpoint']}: {r['error']}" for r in probe_rows if r.get("error")]
+    if _errors:
+        t2.caption("Current errors: " + " · ".join(_errors))
 
 st.divider()
-k1, k2 = st.columns(2)
-with k1:
-    st.subheader("Docker containers" if backend == "docker" else "Kubernetes pods")
-    if snap["available"] and snap["pods"]:
-        st.dataframe(pd.DataFrame(snap["pods"]), width="stretch", hide_index=True)
-    elif snap["error"]:
-        st.warning(f"{backend.capitalize()} data unavailable: {snap['error']}")
-    else:
-        st.info("No workloads found (check the Compose project / namespace).")
-with k2:
-    st.subheader("Container events (last 2 min)" if backend == "docker" else "Kubernetes events")
-    if snap["events"]:
-        st.code("\n".join(snap["events"]), language="text")
-    else:
-        st.info("No events returned.")
+st.subheader("DOCKER CONTAINERS" if backend == "docker" else "KUBERNETES PODS")
+if snap["available"] and snap["pods"]:
+    st.dataframe(pd.DataFrame(snap["pods"]), width="stretch", hide_index=True)
+elif snap["error"]:
+    st.warning(f"{backend.capitalize()} data unavailable: {snap['error']}")
+else:
+    st.info("No workloads found (check the Compose project / namespace).")
+st.divider()
+st.subheader("CONTAINER EVENTS (LAST 2 MIN)" if backend == "docker" else "KUBERNETES EVENTS")
+_apps = {p.get("name"): p.get("app") or p.get("name") for p in snap.get("pods") or []}
+_events = sample.get("recent_events") or []
+if backend == "docker" and _events:
+    st.table(pd.DataFrame([
+        {
+            "Time": e["time"][11:19],
+            "Service": _apps.get(e["container"], e["container"]),
+            "Event": e["action"].replace("health_status: ", "health: "),
+            "Exit code": "" if e.get("exit_code") is None else e["exit_code"],
+            "Signal": e.get("signal") or "",
+        }
+        for e in reversed(_events[-15:])
+    ]).set_index("Time"))
+elif snap["events"]:
+    st.code("\n".join(snap["events"]), language="text")
+else:
+    st.info("No container events in the last 2 minutes.")
 
 with st.expander("CPU / memory snapshot"):
     st.code(snap["cpu_memory"], language="text")
-    st.caption("Docker: from `docker stats --no-stream`, refreshed every 10 s in the background. Kubernetes: needs a working metrics API.")
 
 with st.expander("Latest telemetry record (for AI diagnosis)"):
     st.json(sample)
-    st.caption("The latest 60 samples are written to telemetry.json. SLA_BREACH.flag exists while the latest sample shows a "
-               "measured breach and is removed when it returns to normal. Samples taken during the alerting test carry `simulated: true`.")
